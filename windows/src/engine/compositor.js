@@ -72,19 +72,24 @@ const cssColor = c => `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${
 /// `resolve(layer, t, scale)` returns a drawable { image, width, height } for media layers, or
 /// null when the frame is not available (the layer is skipped). Text layers are rendered here.
 /// Returns the number of media layers that were not available.
-function composeFrame(ctx, outW, outH, project, t, resolve) {
+/// Options: `transparent` leaves out the background colour; `skip` is a Set of clip ids not drawn
+/// (the exporter uses both to draw the layers above a video that ffmpeg places itself).
+function composeFrame(ctx, outW, outH, project, t, resolve, { transparent = false, skip = null } = {}) {
   const canvas = project.canvas;
   const scale = outW / Math.max(1, canvas.width);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
   ctx.filter = 'none';
-  ctx.fillStyle = cssColor(canvas.backgroundColor);
   ctx.clearRect(0, 0, outW, outH);
-  ctx.fillRect(0, 0, outW, outH);
+  if (!transparent) {
+    ctx.fillStyle = cssColor(canvas.backgroundColor);
+    ctx.fillRect(0, 0, outW, outH);
+  }
   let missing = 0;
 
   for (const layer of activeLayers(project, t)) {
+    if (skip && skip.has(layer.clip.id)) continue;
     const clip = layer.clip;
     const alpha = layerAlpha(clip, t);
     if (alpha <= 0.001) continue;

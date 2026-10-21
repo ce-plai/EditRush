@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test \"test/*.test.js\"",
-    "package": "electron-packager . EditRush --platform=win32 --arch=x64 --out=dist --overwrite --icon=icon.ico --ignore=^/dist --ignore=^/test --ignore=^/scripts"
+    "package": "electron-packager . EditRush --platform=win32 --arch=x64 --out=dist --overwrite --icon=icon.ico --ignore=^/dist --ignore=^/test --ignore=^/scripts --ignore=^/README-TESTING.txt && copy /Y README-TESTING.txt dist\\EditRush-win32-x64\\"
   },
   "devDependencies": {
     "@electron/packager": "^18.3.6",

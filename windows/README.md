@@ -42,8 +42,12 @@ Autosave: `%APPDATA%\EditRush\Autosave.editrush`.
 ## Differences from the macOS version
 
 - Colour filters are approximations of the Core Image presets (same names, similar looks).
-- Export renders each frame with the same compositor as the preview and encodes with ffmpeg
-  (libx264 / libx265). It runs at roughly real time at 1080p.
+- Export: stretches of plain full-frame video (no transform, colour or filter, no fade in
+  progress) and still frames are made by ffmpeg directly, with titles and images above them drawn
+  once by the compositor as an overlay. Everything else is drawn frame by frame with the same
+  compositor as the preview. Encoding uses NVIDIA NVENC when the machine has it, otherwise
+  libx264 / libx265. A 9.6-minute 1440p capture exports to 1080p in about a minute on an RTX 4070
+  Ti SUPER; frames drawn by the compositor go at about 40-60 fps.
 - Minimum timeline zoom is 0.5 px/s (macOS: 5) so Zoom to Fit can show long recordings.
 - Default title font is Segoe UI. Projects from the Mac keep their font names; a font that is not
   installed falls back to Segoe UI.

@@ -157,8 +157,9 @@ The Windows version has the same features and shortcuts, with these differences:
 - Ctrl replaces ⌘ in every shortcut; Delete or Backspace replaces ⌫; Ctrl+Y also redoes.
 - Colour filter presets approximate the Core Image looks; titles are drawn by the browser
   engine, so line spacing and shadows differ slightly.
-- Export renders frames with the preview's compositor and encodes with ffmpeg (libx264 /
-  libx265); it runs at about real time at 1080p.
+- Export uses ffmpeg, with NVIDIA NVENC hardware encoding when available. Plain video and still
+  stretches go straight through ffmpeg (about 9x real time for a 1440p capture at 1080p); fades,
+  transforms, colour and filters are drawn by the preview's compositor (about 1.5-2x real time).
 - Minimum timeline zoom is 0.5 px/s (macOS: 5) so Zoom to Fit can show long recordings.
 - Projects saved on the Mac open on Windows, but Mac media paths show as Missing until relinked.
 - `--snapshot` (below) is macOS only.
