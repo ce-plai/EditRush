@@ -6,6 +6,10 @@ import EditRushCore
 ///
 ///   EditRush --snapshot out.png [--demo <media folder> | --project file.editrush]
 ///            [--size 1600x1000] [--select-first] [--playhead 2.5] [--wait 2]
+///            [--select-media <n>] [--status "message"] [--export-sheet]
+///
+/// `--select-media` selects the n-th bin item (0-based), `--status` shows a toast, and
+/// `--export-sheet` renders the export sheet on its own instead of the main window.
 ///
 /// Renders `MainView` offscreen to a PNG and exits. AVPlayerLayer / Metal content is not
 /// captured by `cacheDisplay`, so views check `AppEnvironment.shared.isSnapshotMode` and show
@@ -39,8 +43,19 @@ enum SnapshotRunner {
                 env.store.selection = [c.id]
             }
             if let t = value("--playhead").flatMap(Double.init) { env.playback.seek(to: t) }
+            if let n = value("--select-media").flatMap(Int.init), env.store.project.media.indices.contains(n) {
+                env.store.selectedMediaID = env.store.project.media[n].id
+            }
+            if let message = value("--status") { env.store.statusMessage = message }
 
-            let root = MainView().appEnvironment(env).frame(width: size.width, height: size.height)
+            let showExportSheet = args.contains("--export-sheet")
+            if showExportSheet, value("--size") == nil { size = CGSize(width: 560, height: 452) }
+            let root = Group {
+                if showExportSheet { ExportSheet() } else { MainView() }
+            }
+            .appEnvironment(env)
+            .frame(width: size.width, height: size.height)
+            .background(Theme.panelBackground)
             let host = NSHostingView(rootView: root)
             host.frame = CGRect(origin: .zero, size: size)
             let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -20000, y: -20000), size: size),

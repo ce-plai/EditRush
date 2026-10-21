@@ -31,10 +31,37 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <dict>
       <key>CFBundleTypeName</key><string>EditRush Project</string>
       <key>CFBundleTypeExtensions</key><array><string>editrush</string></array>
+      <key>LSItemContentTypes</key><array><string>local.editrush.project</string></array>
       <key>CFBundleTypeRole</key><string>Editor</string>
       <key>LSHandlerRank</key><string>Owner</string>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Media</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.movie</string>
+        <string>public.audio</string>
+        <string>public.image</string>
+      </array>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+    </dict>
   </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>local.editrush.project</string>
+      <key>UTTypeDescription</key><string>EditRush Project</string>
+      <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+      <key>UTTypeIconFile</key><string>AppIcon</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>editrush</string></array>
+      </dict>
+    </dict>
+  </array>
+  <key>NSHumanReadableCopyright</key><string>EditRush — a fast, simple video editor.</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
 </dict>
 </plist>
 PLIST
