@@ -3,8 +3,9 @@ import CoreImage
 import CoreText
 import Foundation
 
-/// Renders `TextStyle` into an image at canvas pixel scale.
-/// The rendered image size is the text clip's base `content` size for `ClipGeometry.rect`.
+/// Renders `TextStyle` into an image at canvas pixel scale (or a multiple of it, for sharp output
+/// when a title is displayed larger). The canvas-pixel size is the text clip's base `content`
+/// size for `ClipGeometry.rect`.
 public enum TextRenderer {
     /// Size in canvas pixels of the rendered text (including background box padding / shadow margin).
     public static func size(for style: TextStyle, canvas: CGSize) -> CGSize {
@@ -13,7 +14,35 @@ public enum TextRenderer {
 
     /// Premultiplied RGBA image of the text, `size(for:canvas:)` pixels. Cached by style+canvas.
     public static func image(for style: TextStyle, canvas: CGSize) -> CGImage? {
-        cache.image(for: style, canvas: canvas)
+        cache.image(for: style, canvas: canvas, scale: 1)
+    }
+
+    /// The text rasterized at `rasterScale(for: scale)` × `size(for:canvas:)` pixels, for titles
+    /// displayed larger (or smaller) than canvas pixels. Same layout and geometry as scale 1.
+    public static func image(for style: TextStyle, canvas: CGSize, scale: Double) -> CGImage? {
+        let size = size(for: style, canvas: canvas)
+        let maxScale = maxRasterDimension / max(1, size.width, size.height)
+        var s = rasterScale(for: scale)
+        if s > maxScale { s = rasterScales.last { $0 <= maxScale } ?? rasterScales[0] }
+        return cache.image(for: style, canvas: canvas, scale: s)
+    }
+
+    /// Long-side limit (pixels) for scaled text rasters.
+    static let maxRasterDimension: CGFloat = 8192
+
+    /// Raster scales titles are rendered at; a requested display scale rounds up to one of these.
+    static let rasterScales: [Double] = [0.5, 0.75, 1, 1.5, 2, 3, 4]
+
+    /// The raster scale used for a title displayed at `scale` × its canvas-pixel size.
+    public static func rasterScale(for scale: Double) -> Double {
+        guard scale.isFinite else { return 1 }
+        return rasterScales.first { $0 >= scale - 1e-6 } ?? rasterScales[rasterScales.count - 1]
+    }
+
+    /// Keeps at least `count` distinct titles cached, so a composition with many titles does not
+    /// re-rasterize them on every rebuild.
+    static func reserveCapacity(_ count: Int) {
+        cache.reserveCapacity(count)
     }
 
     // MARK: - Layout
@@ -86,12 +115,15 @@ public enum TextRenderer {
                       textRect: textRect, boxRect: hasBox ? boxRect : nil, boxRadius: px * 0.22, fontPixelSize: px)
     }
 
-    static func render(_ layout: Layout, style: TextStyle) -> CGImage? {
-        let w = Int(layout.size.width), h = Int(layout.size.height)
+    /// Draws `layout` into a bitmap of `scale` × `layout.size` pixels.
+    static func render(_ layout: Layout, style: TextStyle, scale: Double = 1) -> CGImage? {
+        let w = Int((layout.size.width * scale).rounded(.up)), h = Int((layout.size.height * scale).rounded(.up))
         guard w > 0, h > 0,
               let space = CGColorSpace(name: CGColorSpace.sRGB),
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let sx = CGFloat(w) / layout.size.width, sy = CGFloat(h) / layout.size.height
+        ctx.scaleBy(x: sx, y: sy)
         ctx.setAllowsAntialiasing(true)
         ctx.setShouldSmoothFonts(false)
         ctx.interpolationQuality = .high
@@ -105,7 +137,8 @@ public enum TextRenderer {
 
         let path = CGPath(rect: layout.textRect, transform: nil)
         if style.shadow {
-            let px = layout.fontPixelSize
+            // Shadow parameters are in device pixels (not affected by the CTM).
+            let px = layout.fontPixelSize * sy
             ctx.setShadow(offset: CGSize(width: 0, height: -px * 0.03), blur: px * 0.1,
                           color: CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.65))
         }
@@ -144,7 +177,8 @@ public enum TextRenderer {
     private static let cache = TextRenderCache()
 }
 
-/// Thread-safe cache of text layouts and rasterized images keyed by (style, canvas).
+/// Thread-safe cache of text layouts and rasterized images keyed by (style, canvas); each entry
+/// holds one image per raster scale.
 private final class TextRenderCache: @unchecked Sendable {
     private struct Key: Hashable {
         let style: TextStyle
@@ -153,7 +187,7 @@ private final class TextRenderCache: @unchecked Sendable {
     }
     private final class Entry {
         let layout: TextRenderer.Layout
-        var image: CGImage?
+        var images: [Double: CGImage] = [:]
         var lastUse: UInt64
         init(layout: TextRenderer.Layout, lastUse: UInt64) { self.layout = layout; self.lastUse = lastUse }
     }
@@ -161,18 +195,25 @@ private final class TextRenderCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [Key: Entry] = [:]
     private var clock: UInt64 = 0
-    private let limit = 96
+    private var limit = 96
+
+    func reserveCapacity(_ count: Int) {
+        lock.withLock { limit = max(96, 2 * count + 16) }
+    }
 
     func layout(for style: TextStyle, canvas: CGSize) -> TextRenderer.Layout {
         entry(for: style, canvas: canvas).layout
     }
 
-    func image(for style: TextStyle, canvas: CGSize) -> CGImage? {
+    func image(for style: TextStyle, canvas: CGSize, scale: Double) -> CGImage? {
         let e = entry(for: style, canvas: canvas)
-        if let img = lock.withLock({ e.image }) { return img }
-        let img = TextRenderer.render(e.layout, style: style)
-        lock.withLock { if e.image == nil { e.image = img } }
-        return img
+        if let img = lock.withLock({ e.images[scale] }) { return img }
+        guard let img = TextRenderer.render(e.layout, style: style, scale: scale) else { return nil }
+        return lock.withLock {
+            if let existing = e.images[scale] { return existing }
+            e.images[scale] = img
+            return img
+        }
     }
 
     private func entry(for style: TextStyle, canvas: CGSize) -> Entry {

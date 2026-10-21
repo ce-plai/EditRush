@@ -614,6 +614,361 @@ final class EngineTests: XCTestCase {
         XCTAssertLessThan(elapsed, 0.2, "build took \(elapsed)s")
         XCTAssertEqual(built.duration, 60, accuracy: 1e-6)
     }
+
+    /// Median time of five property-only rebuilds of a project with `n` clips on V1, V2 and A1.
+    func propertyRebuildTime(clipsPerTrack n: Int) async throws -> TimeInterval {
+        let a = try await media("clip_a.mp4"), music = try await media("music.mp3")
+        var p = makeProject([a, music])
+        for i in 0..<n {
+            p.tracks[0].clips.append(Clip(mediaID: a.id, start: Double(i), duration: 1, sourceIn: 1))
+            var top = Clip(mediaID: a.id, start: Double(i) + 0.5, duration: 0.5)
+            top.transform.scale = 0.5
+            p.tracks[1].clips.append(top)
+            var m = Clip(mediaID: music.id, start: Double(i), duration: 1)
+            m.fadeIn = 0.1
+            p.tracks[2].clips.append(m)
+        }
+        let first = try await CompositionBuilder.build(project: p, assets: .shared, renderScale: 0.5, reusing: nil)
+        var previous = first
+        var times: [TimeInterval] = []
+        for k in 0..<5 {
+            p.tracks[0].clips[0].transform.scale = 0.5 + Double(k) * 0.05
+            let start = Date()
+            previous = try await CompositionBuilder.build(project: p, assets: .shared, renderScale: 0.5, reusing: previous)
+            times.append(Date().timeIntervalSince(start))
+            XCTAssertTrue(previous.sharesComposition(with: first))
+        }
+        XCTAssertEqual(previous.videoComposition.instructions.count, 2 * n)
+        return times.sorted()[2]
+    }
+
+    func testPropertyRebuildScalesLinearly() async throws {
+        let small = try await propertyRebuildTime(clipsPerTrack: 100)
+        let large = try await propertyRebuildTime(clipsPerTrack: 400)
+        // Linear ≈ 4×; the old instruction sweep and audio-mix construction were quadratic (≈ 14×).
+        XCTAssertLessThan(large, 0.025, "400 clips/track property rebuild took \(large * 1000) ms")
+        XCTAssertLessThan(large / small, 8, "100 → 400 clips/track: \(small * 1000) → \(large * 1000) ms")
+    }
+
+    func testManyTitlesAreNotReRasterizedOnEveryRebuild() async throws {
+        var p = makeProject([])
+        for i in 0..<150 {
+            p.tracks[0].clips.append(Clip(mediaID: nil, start: Double(i), duration: 1, text: TextStyle(text: "Title \(i) \(UUID())")))
+        }
+        func textImages(_ built: BuiltComposition) -> [CGImage] {
+            built.videoComposition.instructions.compactMap { instruction -> CGImage? in
+                guard case .image(let image)? = (instruction as? CompositorInstruction)?.snapshot.layers.first?.content else { return nil }
+                return image.cgImage
+            }
+        }
+        let first = try await CompositionBuilder.build(project: p, assets: .shared, renderScale: 0.5, reusing: nil)
+        p.canvas.backgroundColor = RGBA(0.1, 0.1, 0.1)
+        let second = try await CompositionBuilder.build(project: p, assets: .shared, renderScale: 0.5, reusing: first)
+        let before = textImages(first), after = textImages(second)
+        XCTAssertEqual(before.count, 150)
+        XCTAssertEqual(after.count, 150)
+        XCTAssertTrue(zip(before, after).allSatisfy { $0 === $1 }, "titles come from the cache")
+    }
+
+    func testAudioMixGainsAcrossAdjacentClips() async throws {
+        let music = try await media("music.mp3")
+        var p = makeProject([music])
+        var a = Clip(mediaID: music.id, start: 1, duration: 1)
+        a.volume = 0.5
+        var b = Clip(mediaID: music.id, start: 2, duration: 2, sourceIn: 1)
+        b.fadeIn = 1
+        var c = Clip(mediaID: music.id, start: 4, duration: 2, sourceIn: 3)
+        c.volume = 0.25
+        c.fadeOut = 1
+        p.tracks[2].clips = [a, b, c]
+        let built = try await CompositionBuilder.build(project: p, assets: .shared)
+        let params = try XCTUnwrap(built.audioMix.inputParameters.first)
+        func gain(at seconds: Double) -> Float? {
+            var start: Float = 0, end: Float = 0, range = CMTimeRange.zero
+            guard params.getVolumeRamp(for: CMTime(seconds: seconds, preferredTimescale: 600),
+                                       startVolume: &start, endVolume: &end, timeRange: &range),
+                  range.containsTime(CMTime(seconds: seconds, preferredTimescale: 600)) else { return nil }
+            let f = Float((seconds - range.start.seconds) / max(1e-9, range.duration.seconds))
+            return start + (end - start) * f
+        }
+        XCTAssertEqual(gain(at: 0.5) ?? -1, 0, accuracy: 0.001, "silent before the first clip")
+        XCTAssertEqual(gain(at: 1.5) ?? -1, 0.5, accuracy: 0.001)
+        XCTAssertEqual(gain(at: 2.5) ?? -1, 0.5, accuracy: 0.001, "halfway through the fade-in")
+        XCTAssertEqual(gain(at: 3.5) ?? -1, 1, accuracy: 0.001)
+        XCTAssertEqual(gain(at: 4.5) ?? -1, 0.25, accuracy: 0.001)
+        XCTAssertEqual(gain(at: 5.5) ?? -1, 0.125, accuracy: 0.001, "halfway through the fade-out")
+    }
+
+    func testMutedClipsOnAudioTracksAreSilent() async throws {
+        let music = try await media("music.mp3"), a = try await media("clip_a.mp4")
+        var p = makeProject([music, a])
+        var m = Clip(mediaID: music.id, start: 0, duration: 2)
+        m.audioMuted = true
+        var detached = Clip(mediaID: a.id, start: 0, duration: 2)
+        detached.audioMuted = true
+        p.tracks[2].clips = [m]
+        p.tracks[3].clips = [detached]
+        let muted = try await CompositionBuilder.build(project: p, assets: .shared)
+        let mutedTracks = try await muted.composition.loadTracks(withMediaType: .audio)
+        XCTAssertTrue(mutedTracks.isEmpty, "muted audio-track clips are left out")
+        XCTAssertTrue(muted.audioMix.inputParameters.isEmpty)
+
+        p.tracks[2].clips[0].audioMuted = false
+        let unmuted = try await CompositionBuilder.build(project: p, assets: .shared, renderScale: 1, reusing: muted)
+        let unmutedTracks = try await unmuted.composition.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(unmutedTracks.count, 1)
+    }
+
+    func testMissingStillIsReportedAndExportKeepsExistingFile() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("EditRushMissingStill-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let copy = folder.appendingPathComponent("vanishing.jpg")
+        try FileManager.default.copyItem(at: try Fixture.url("solid_white.jpg"), to: copy)
+        let still = try await MediaImporter.probe(copy)
+        try FileManager.default.removeItem(at: copy)
+
+        var p = makeProject([still])
+        p.tracks[0].clips = [Clip(mediaID: still.id, start: 0, duration: 1)]
+        let built = try await CompositionBuilder.build(project: p, assets: AssetCache())
+        XCTAssertEqual(built.missingMedia, ["vanishing"])
+        var hidden = p
+        hidden.tracks[0].isHidden = true
+        let hiddenBuilt = try await CompositionBuilder.build(project: hidden, assets: AssetCache())
+        XCTAssertEqual(hiddenBuilt.missingMedia, ["vanishing"], "missing stills on hidden tracks are reported too")
+
+        let destination = folder.appendingPathComponent("previous.mp4")
+        try Data("previous export".utf8).write(to: destination)
+        let exporter = await Exporter(assets: AssetCache())
+        await exporter.export(project: p, to: destination, settings: ExportSettings())
+        let state = await exporter.state
+        XCTAssertEqual(state, .failed(EngineError.missingMedia("vanishing").localizedDescription))
+        XCTAssertEqual(try Data(contentsOf: destination), Data("previous export".utf8), "a failed export keeps the old file")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["previous.mp4"])
+    }
+
+    func testExportReplacesExistingFileOnlyOnSuccess() async throws {
+        let red = try await media("solid_red.mp4")
+        var p = makeProject([red])
+        p.tracks[0].clips = [Clip(mediaID: red.id, start: 0, duration: 1)]
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("EditRushReplace-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let destination = folder.appendingPathComponent("movie.mov")
+        let old = Data("previous export".utf8)
+        try old.write(to: destination)
+        var settings = ExportSettings()
+        settings.container = .mov
+        settings.resolution = .p720
+
+        // Cancelled: the old file survives and no temporary file is left behind.
+        var long = p
+        long.tracks[0].clips = (0..<20).map { Clip(mediaID: red.id, start: Double($0) * 3, duration: 3) }
+        let cancelled = await Exporter()
+        let task = Task { await cancelled.export(project: long, to: destination, settings: settings) }
+        try await Task.sleep(for: .milliseconds(150))
+        await cancelled.cancel()
+        await task.value
+        let cancelledState = await cancelled.state
+        XCTAssertEqual(cancelledState, .cancelled)
+        XCTAssertEqual(try Data(contentsOf: destination), old)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["movie.mov"])
+
+        // Succeeded: the new movie replaces the old file.
+        let exporter = await Exporter()
+        await exporter.export(project: p, to: destination, settings: settings)
+        let state = await exporter.state
+        XCTAssertEqual(state, .finished(destination))
+        let duration = try await AVURLAsset(url: destination).load(.duration).seconds
+        XCTAssertEqual(duration, 1, accuracy: 0.1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["movie.mov"])
+    }
+
+    // MARK: - Stills
+
+    func stillExtent(_ built: BuiltComposition) throws -> CGSize {
+        let instruction = try XCTUnwrap(built.videoComposition.instructions.first as? CompositorInstruction)
+        guard case .image(let image)? = instruction.snapshot.layers.first?.content else {
+            XCTFail("no still layer"); return .zero
+        }
+        return image.extent.size
+    }
+
+    func testStillsDecodeAtDisplaySize() async throws {
+        let photo = try await media("photo.jpg") // 4000x3000, fits a 1280x720 canvas at 960x720
+        var p = makeProject([photo])
+        p.tracks[0].clips = [Clip(mediaID: photo.id, start: 0, duration: 2)]
+        let cache = AssetCache()
+        let preview = try await CompositionBuilder.build(project: p, assets: cache, renderScale: 0.5)
+        XCTAssertEqual(try stillExtent(preview), CGSize(width: 512, height: 384), "480 px on screen → 512 px decode")
+        let full = try await CompositionBuilder.build(project: p, assets: cache, renderScale: 1)
+        XCTAssertEqual(try stillExtent(full), CGSize(width: 1024, height: 768))
+        p.tracks[0].clips[0].transform.scale = 3
+        let zoomed = try await CompositionBuilder.build(project: p, assets: cache, renderScale: 1)
+        XCTAssertEqual(try stillExtent(zoomed), CGSize(width: 3072, height: 2304), "zoomed stills decode sharper")
+        p.tracks[0].clips[0].transform.scale = 0.9
+        let reused = try await CompositionBuilder.build(project: p, assets: cache, renderScale: 1)
+        XCTAssertEqual(try stillExtent(reused), CGSize(width: 1024, height: 768), "smallest sufficient decode is reused")
+        XCTAssertEqual(AssetCache.stillDecodeSize(displayLongSide: 10_000, media: photo), 4000)
+        let white = try await media("solid_white.jpg")
+        XCTAssertEqual(AssetCache.stillDecodeSize(displayLongSide: 900, media: white), 800)
+
+        // A downscaled still still fills its rect.
+        p.tracks[0].clips[0].transform.scale = 1
+        p.tracks[0].clips[0].transform.fitMode = .fill
+        let px = try await render(p, at: 1)
+        XCTAssertFalse(isBlack(px.rgb(1, 1)))
+        XCTAssertFalse(isBlack(px.rgb(px.width - 2, px.height - 2)))
+    }
+
+    func testStillCacheStaysWithinBudget() async throws {
+        let photo = try await media("photo.jpg")
+        let copies: [MediaItem] = (0..<6).map { _ in var m = photo; m.id = UUID(); return m }
+        let cache = AssetCache()
+        let perImage = 1024 * 768 * 4
+        cache.imageByteBudget = 3 * perImage
+        let batch = await cache.images(for: copies.map { .init(media: $0, displayLongSide: 1000) })
+        XCTAssertEqual(batch.count, 6)
+        XCTAssertEqual(batch.values.first?.extent.size, CGSize(width: 1024, height: 768))
+        XCTAssertEqual(cache.cachedImageBytes, 6 * perImage, "one batch keeps every still it needs")
+
+        let smaller = await cache.images(for: copies.prefix(2).map { .init(media: $0, displayLongSide: 1000) })
+        XCTAssertEqual(smaller.count, 2)
+        XCTAssertTrue(smaller[copies[0].id] === batch[copies[0].id], "served from the cache")
+        XCTAssertLessThanOrEqual(cache.cachedImageBytes, 3 * perImage, "stills no longer needed are evicted")
+        for m in copies { XCTAssertNotNil(cache.image(for: m, displayLongSide: 1000)) }
+        XCTAssertLessThanOrEqual(cache.cachedImageBytes, 3 * perImage)
+        cache.purgeAll()
+        XCTAssertEqual(cache.cachedImageBytes, 0)
+    }
+
+    func testStillDecodingIsConcurrentAndFast() async throws {
+        let photo = try await media("photo.jpg")
+        var p = makeProject([])
+        p.canvas = CanvasSettings(width: 1920, height: 1080, frameRate: 30)
+        for i in 0..<30 {
+            var m = photo
+            m.id = UUID()
+            p.media.append(m)
+            p.tracks[0].clips.append(Clip(mediaID: m.id, start: Double(i) * 3, duration: 3))
+        }
+        let cache = AssetCache()
+        let start = Date()
+        let built = try await CompositionBuilder.build(project: p, assets: cache)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertEqual(built.missingMedia, [])
+        XCTAssertLessThan(elapsed, 1.0, "30 photos took \(elapsed) s (full-size serial decoding took ~1.4 s)")
+        XCTAssertLessThan(cache.cachedImageBytes, 30 * 1536 * 1152 * 4 + 1, "decoded at display size, not 4096 px")
+    }
+
+    // MARK: - Video shorter than its clip
+
+    func testClipLongerThanItsVideoHoldsTheLastFrame() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("EditRushHold-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var long = try await MediaImporter.probe(try TestMedia.videoWithLongerAudio(in: folder, video: 2, audio: 3))
+        long.duration = 3 // as probed by older versions: the asset (audio) duration
+        let red = try await media("solid_red.mp4")
+        var p = makeProject([long, red])
+        p.tracks[0].clips = [Clip(mediaID: long.id, start: 0, duration: 3), Clip(mediaID: red.id, start: 3, duration: 1)]
+        let built = try await CompositionBuilder.build(project: p, assets: .shared)
+        XCTAssertEqual(built.duration, 4, accuracy: 1e-6)
+        let audio = try await built.composition.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audio.count, 1)
+
+        func meanBrightness(_ px: Pixels) -> Double {
+            var sum = 0.0, n = 0.0
+            for y in stride(from: 0, to: px.height, by: 8) {
+                for x in stride(from: 0, to: px.width, by: 8) { sum += px.brightness(x, y); n += 1 }
+            }
+            return sum / n
+        }
+        let lastFrame = meanBrightness(try await render(p, at: 1.95))
+        for t in [2.05, 2.5, 2.95] {
+            let held = meanBrightness(try await render(p, at: t))
+            XCTAssertGreaterThan(held, 30, "frame at \(t) s is not black")
+            XCTAssertEqual(held, lastFrame, accuracy: 12, "frame at \(t) s holds the last picture")
+        }
+        assertColor(try await render(p, at: 3.5).rgb(fx: 0.5, fy: 0.5), 255, 0, 0, "next clip follows")
+    }
+
+    // MARK: - Titles at output resolution
+
+    func testTitlesRasterizeAtDisplayResolution() async throws {
+        var style = TextStyle(text: "Sharp")
+        style.shadow = true
+        let size = TextRenderer.size(for: style, canvas: canvas.size)
+        let double = try XCTUnwrap(TextRenderer.image(for: style, canvas: canvas.size, scale: 2))
+        XCTAssertEqual(CGFloat(double.width), (size.width * 2).rounded(.up))
+        XCTAssertEqual(CGFloat(double.height), (size.height * 2).rounded(.up))
+        XCTAssertTrue(TextRenderer.image(for: style, canvas: canvas.size, scale: 1.9) === double, "scales round up to a cached step")
+        XCTAssertEqual(TextRenderer.size(for: style, canvas: canvas.size), size, "geometry stays in canvas pixels")
+
+        var p = makeProject([])
+        var c = Clip(mediaID: nil, start: 0, duration: 2, text: style)
+        p.tracks[0].clips = [c]
+        func textLayer(_ built: BuiltComposition) throws -> (image: CIImage, contentSize: CGSize) {
+            let instruction = try XCTUnwrap(built.videoComposition.instructions.first as? CompositorInstruction)
+            let layer = try XCTUnwrap(instruction.snapshot.layers.first)
+            guard case .image(let image) = layer.content else { throw XCTSkip("not an image layer") }
+            return (image, layer.contentSize)
+        }
+        // A 4K export of a 720p canvas rasterizes at 3×.
+        let export = try textLayer(try await CompositionBuilder.build(project: p, assets: .shared, renderScale: 3))
+        XCTAssertEqual(export.image.extent.width, (size.width * 3).rounded(.up))
+        XCTAssertEqual(export.contentSize, size)
+        // A title scaled up 1.5× at canvas resolution rasterizes at 1.5×.
+        c.transform.scale = 1.5
+        p.tracks[0].clips = [c]
+        let scaled = try textLayer(try await CompositionBuilder.build(project: p, assets: .shared, renderScale: 1))
+        XCTAssertEqual(scaled.image.extent.width, (size.width * 1.5).rounded(.up))
+        XCTAssertEqual(scaled.contentSize, size)
+
+        // The scaled raster lands exactly where the canvas-pixel one would.
+        let rect = ClipGeometry.rect(content: size, canvas: canvas.size, transform: c.transform, isText: true)
+        let px = try await render(p, at: 1)
+        let s = renderSize.width / canvas.size.width
+        var outside = 0
+        for y in 0..<px.height {
+            for x in stride(from: 0, to: px.width, by: 2) where px.brightness(x, y) > 200 {
+                let point = CGPoint(x: (Double(x) + 0.5) / s, y: (Double(y) + 0.5) / s)
+                if !rect.insetBy(dx: -4, dy: -4).contains(point) { outside += 1 }
+            }
+        }
+        XCTAssertEqual(outside, 0)
+    }
+
+    // MARK: - Live drags
+
+    @MainActor
+    func testStreamingStructuralEditsKeepTheCurrentPlayerItem() async throws {
+        let p = try await multiClipProject()
+        let store = EditorStore(project: p)
+        let playback = PlaybackController(store: store)
+        let ready = await waitUntil { playback.isReady && playback.player.currentItem != nil }
+        XCTAssertTrue(ready)
+        playback.seek(to: 5)
+
+        // A clip drag: one coalesced move per mouse event, every ~16 ms.
+        let clipID = p.tracks[0].clips[1].id, trackID = p.tracks[0].id
+        var items = Set<ObjectIdentifier>()
+        for i in 1...40 {
+            _ = store.moveClip(clipID, toTrack: trackID, start: 4 + Double(i) / 30, coalesce: "drag")
+            try await Task.sleep(for: .milliseconds(16))
+            if let item = playback.player.currentItem { items.insert(ObjectIdentifier(item)) } else { XCTFail("no item mid-drag") }
+        }
+        XCTAssertLessThanOrEqual(items.count, 2, "at most the first edit of the drag replaces the item, not every mouse event")
+
+        // Once the edits settle, the final structure is installed.
+        let expected = store.project.duration
+        let settled = await waitUntil {
+            guard let duration = playback.player.currentItem?.duration.seconds, duration.isFinite else { return false }
+            return abs(duration - expected) < 0.01
+        }
+        XCTAssertTrue(settled, "final structure installed after the drag")
+        XCTAssertEqual(store.playhead, 5)
+    }
 }
 
 /// Collects AVVideoComposition validation complaints.

@@ -173,17 +173,20 @@ public enum MediaImporter {
         guard !tracks.isEmpty else { return .failure(.noTracks(file)) }
         guard playable, !(videoTracks.isEmpty && audioTracks.isEmpty) else { return .failure(.unplayable(file)) }
 
-        let seconds = duration.isNumeric ? duration.seconds : 0
+        var seconds = duration.isNumeric ? duration.seconds : 0
         guard seconds.isFinite, seconds > 0.001 else { return .failure(.zeroDuration(file)) }
 
         if let vt = videoTracks.first {
-            let (natural, xf, fps, minFrame) = try await vt.load(.naturalSize, .preferredTransform,
-                                                                  .nominalFrameRate, .minFrameDuration)
+            let (natural, xf, fps, minFrame, range) = try await vt.load(.naturalSize, .preferredTransform,
+                                                                         .nominalFrameRate, .minFrameDuration, .timeRange)
             let r = CGRect(origin: .zero, size: natural).applying(xf)
             let w = Int(abs(r.width).rounded()), h = Int(abs(r.height).rounded())
             guard w > 0, h > 0 else { return .failure(.unplayable(file)) }
             var rate = Double(fps)
             if !(rate > 0), minFrame.isNumeric, minFrame.seconds > 0 { rate = 1 / minFrame.seconds }
+            // Clips are bounded by the picture: audio that runs past the last frame is dropped.
+            let videoEnd = range.end.isNumeric ? range.end.seconds : 0
+            if videoEnd.isFinite, videoEnd > 0.001 { seconds = min(seconds, videoEnd) }
             return .success(MediaItem(url: url, name: displayName(url), kind: .video, duration: seconds,
                                       pixelWidth: w, pixelHeight: h, frameRate: rate.isFinite ? rate : 0,
                                       hasAudio: !audioTracks.isEmpty))
