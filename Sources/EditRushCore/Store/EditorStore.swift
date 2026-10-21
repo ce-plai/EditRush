@@ -1,8 +1,28 @@
 import Foundation
 import Combine
 import Observation
+#if canImport(AppKit)
+import AppKit
+#endif
 
 public enum TrimEdge: Sendable { case leading, trailing }
+
+/// Errors thrown while reading or writing `.editrush` files.
+public enum ProjectFileError: LocalizedError, Equatable {
+    /// The file was written by a newer EditRush (its `version` is above `Project.currentVersion`).
+    case newerVersion(found: Int, supported: Int)
+    /// The file is not a valid EditRush project.
+    case unreadable(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .newerVersion(found, supported):
+            "This project was saved by a newer version of EditRush (format \(found); this version reads up to \(supported)). Please update EditRush to open it."
+        case let .unreadable(reason):
+            "The file isn't a valid EditRush project (\(reason))."
+        }
+    }
+}
 
 /// The single source of truth for the open project and editor UI state.
 /// All edits go through `mutate` so that undo/redo, dirty tracking, autosave and
@@ -14,6 +34,7 @@ public final class EditorStore {
     public private(set) var project: Project
     /// File the project was last saved to / opened from.
     public var projectURL: URL?
+    /// True when the project differs from the last saved / opened / restored state.
     public private(set) var isDirty = false
     /// Increments on every project change (edits, undo, redo, load).
     public private(set) var revision = 0
@@ -35,19 +56,30 @@ public final class EditorStore {
     /// Fires (on the main actor) after every project change with the new project.
     @ObservationIgnored public let changes = PassthroughSubject<Project, Never>()
 
+    /// Clips copied by `copySelection` / `cutSelection` (internal clipboard, not NSPasteboard).
+    var clipboard: [EditorClipboardItem] = []
+
     // MARK: Undo
     @ObservationIgnored private var undoStack: [(name: String, project: Project)] = []
     @ObservationIgnored private var redoStack: [(name: String, project: Project)] = []
     @ObservationIgnored private var lastCoalesceKey: String?
     @ObservationIgnored private var lastCoalesceDate = Date.distantPast
+    /// The project as last saved / opened / restored; `isDirty` compares against it.
+    @ObservationIgnored private var cleanProject: Project
     public private(set) var undoActionName: String?
     public private(set) var redoActionName: String?
     public var canUndo: Bool { !undoStack.isEmpty }
     public var canRedo: Bool { !redoStack.isEmpty }
     public static let undoLimit = 300
 
+    // MARK: Autosave
+    /// Where `autosave()` writes and `restoreAutosave()` reads. Defaults to `EditorStore.autosaveURL`.
+    @ObservationIgnored public var autosaveFileURL: URL = EditorStore.autosaveURL
+    @ObservationIgnored private var lastAutosaved: (revision: Int, url: URL?)?
+
     public init(project: Project = .empty()) {
         self.project = project
+        self.cleanProject = project
     }
 
     // MARK: - Core mutation
@@ -78,14 +110,21 @@ public final class EditorStore {
         guard let step = undoStack.popLast() else { return }
         redoStack.append((step.name, project))
         lastCoalesceKey = nil
-        apply(step.project)
+        apply(keepingName(step.project))
     }
 
     public func redo() {
         guard let step = redoStack.popLast() else { return }
         undoStack.append((step.name, project))
         lastCoalesceKey = nil
-        apply(step.project)
+        apply(keepingName(step.project))
+    }
+
+    /// The project name follows the file name (set on save/open), so history never reverts it.
+    private func keepingName(_ p: Project) -> Project {
+        var p = p
+        p.name = project.name
+        return p
     }
 
     /// Replaces the whole project without recording undo (load / new). Clears undo history.
@@ -95,18 +134,23 @@ public final class EditorStore {
         selection = []
         selectedMediaID = nil
         playhead = 0
+        cleanProject = p
         apply(p)
         isDirty = false
     }
 
     private func apply(_ p: Project) {
         project = p
-        isDirty = true
+        isDirty = p != cleanProject
         revision += 1
         undoActionName = undoStack.last?.name
         redoActionName = redoStack.last?.name
         // Drop selection of clips that no longer exist.
-        selection = selection.filter { p.locate(clip: $0) != nil }
+        if !selection.isEmpty {
+            let existing = Set(p.tracks.lazy.flatMap(\.clips).map(\.id))
+            let kept = selection.intersection(existing)
+            if kept.count != selection.count { selection = kept }
+        }
         changes.send(p)
     }
 
@@ -119,118 +163,26 @@ public final class EditorStore {
     public var primarySelection: Clip? { selection.count == 1 ? selection.first.flatMap { project.clip($0) } : nil }
     public var frameDuration: Seconds { project.canvas.frameDuration }
 
-    // MARK: - Media (STUB — implemented by the store module)
+    // MARK: - Media
 
     /// Adds imported media to the project bin (dedupes by URL).
     public func addMedia(_ items: [MediaItem]) {
-        mutate("Import Media") { p in p.media.append(contentsOf: items) }
-    }
-
-    /// Removes media and every clip that uses it.
-    public func removeMedia(_ id: UUID) {}
-
-    // MARK: - Clip operations (STUBS — implemented by the store module)
-
-    /// Places a clip for `mediaID` on the timeline.
-    /// - trackID: target track (must accept the media kind); nil = pick the lowest compatible
-    ///   track that is free at `time` for the clip's length, creating a new track if none is.
-    /// - time: timeline start; nil = playhead. Overlaps are resolved to the nearest free start.
-    /// Video/audio clips default to the full media duration; images default to 5 s.
-    /// Selects the new clip and returns its id.
-    @discardableResult
-    public func addClip(mediaID: UUID, trackID: UUID? = nil, at time: Seconds? = nil) -> UUID? { nil }
-
-    /// Adds a 5 s text clip (default `TextStyle`) at `time` (nil = playhead) on `trackID`
-    /// (nil = topmost video track that is free there, creating a new video track if needed).
-    @discardableResult
-    public func addTextClip(at time: Seconds? = nil, trackID: UUID? = nil, style: TextStyle = TextStyle()) -> UUID? { nil }
-
-    /// Splits at the playhead: the selected clips under the playhead, or — if no selected clip
-    /// is under the playhead — every clip on unlocked tracks under the playhead.
-    public func splitAtPlayhead() {}
-
-    /// Splits one clip at timeline time `t` (frame quantized). No-op within one frame of an edge.
-    /// The right part gets a new id; fadeOut stays on the right part, fadeIn on the left part.
-    @discardableResult
-    public func split(clipID: UUID, at t: Seconds) -> UUID? { nil }
-
-    /// True if the selection is ≥2 clips on one track that are adjacent with no gap.
-    public var canJoinSelection: Bool { false }
-
-    /// Joins the selected adjacent clips. Clips from the same media with continuous source
-    /// (a.sourceOut == b.sourceIn) merge into one clip. Otherwise (different media / non-
-    /// continuous) the selection cannot be merged and this is a no-op.
-    public func joinSelection() {}
-
-    /// Removes the gap before each selected clip (or, with no selection, all gaps on all tracks),
-    /// shifting later clips on the same track left.
-    public func closeGaps() {}
-
-    /// Deletes selected clips. `ripple` shifts later clips on the same track left by the deleted length.
-    public func deleteSelection(ripple: Bool) {}
-
-    /// Duplicates selected clips, placing each copy right after the original on its track
-    /// (nearest free spot). Selects the copies.
-    public func duplicateSelection() {}
-
-    /// Moves a clip to `trackID` (must accept the clip's content) at `start`.
-    /// Overlaps resolve to the nearest free start on the target track. Returns false if refused
-    /// (locked track / incompatible). Use `coalesce` for live drags.
-    @discardableResult
-    public func moveClip(_ id: UUID, toTrack trackID: UUID, start: Seconds, coalesce: String? = nil) -> Bool { false }
-
-    /// Trims a clip edge to timeline time `t`, clamped by neighbours, media bounds (video/audio
-    /// cannot extend past the source; images/text are unbounded), and a 1-frame minimum.
-    /// Leading-edge trims move `start` and `sourceIn` together.
-    public func trimClip(_ id: UUID, edge: TrimEdge, to t: Seconds, coalesce: String? = nil) {}
-
-    /// Edits arbitrary clip properties (transform, color, text, fades, volume...).
-    /// Values are clamped to valid ranges (fadeIn + fadeOut ≤ duration, opacity 0...1, etc).
-    public func updateClip(_ id: UUID, _ actionName: String, coalesce: String? = nil, _ body: (inout Clip) -> Void) {
-        mutate(actionName, coalesce: coalesce) { p in
-            guard let l = p.locate(clip: id) else { return }
-            body(&p.tracks[l.track].clips[l.clip])
+        mutate("Import Media") { p in
+            var known = Set(p.media.map { $0.url.standardizedFileURL })
+            for item in items where known.insert(item.url.standardizedFileURL).inserted {
+                p.media.append(item)
+            }
         }
     }
 
-    /// Moves a video clip's embedded audio onto an audio track as a separate audio clip
-    /// (same media, start, sourceIn, duration, volume, fades) and sets `audioMuted` on the video clip.
-    public func detachAudio(_ clipID: UUID) {}
-
-    /// Applies a fade-in and/or fade-out (seconds) to the selected clips; nil leaves that side unchanged.
-    public func setFades(in fadeIn: Seconds?, out fadeOut: Seconds?) {}
-
-    // MARK: - Tracks (STUBS)
-
-    @discardableResult
-    public func addTrack(_ kind: TrackKind) -> UUID { UUID() }
-    /// Removes a track and its clips.
-    public func removeTrack(_ id: UUID) {}
-    public func setTrack(_ id: UUID, muted: Bool? = nil, hidden: Bool? = nil, locked: Bool? = nil) {}
-
-    // MARK: - Snapping (STUBS)
-
-    /// Clip edges (all tracks, excluding `excluding` clip ids), the playhead and 0.
-    public func snapTargets(excluding: Set<UUID> = []) -> [Seconds] { [0] }
-    /// Snaps `t` to the nearest target within `thresholdSeconds` if snapping is enabled.
-    public func snap(_ t: Seconds, excluding: Set<UUID> = [], thresholdSeconds: Seconds) -> Seconds { t }
-
-    // MARK: - Selection & clipboard (STUBS — implemented by the store module)
-
-    /// Selects every clip on unlocked tracks.
-    public func selectAll() {}
-    /// Copies the selected clips (with their track positions) to an internal clipboard.
-    public func copySelection() {}
-    /// Copy, then delete (non-ripple).
-    public func cutSelection() {}
-    /// True when the internal clipboard holds clips.
-    public var canPaste: Bool { false }
-    /// Pastes clipboard clips at the playhead, keeping their relative timing and tracks (falls back
-    /// to compatible tracks / new tracks when needed; overlaps resolve to the nearest free start).
-    /// Selects the pasted clips.
-    public func pasteAtPlayhead() {}
-    /// Moves the selected clips by `frames` (negative = left), clamped at 0 and by neighbours.
-    public func nudgeSelection(frames: Int) {}
+    /// Removes media and every clip that uses it.
+    public func removeMedia(_ id: UUID) {
+        mutate("Remove Media") { p in
+            p.media.removeAll { $0.id == id }
+            for ti in p.tracks.indices { p.tracks[ti].clips.removeAll { $0.mediaID == id } }
+        }
+        if selectedMediaID == id { selectedMediaID = nil }
+    }
 
     // MARK: - Timeline zoom
 
@@ -253,18 +205,80 @@ public final class EditorStore {
         mutate("Change Canvas") { $0.canvas = c }
     }
 
-    // MARK: - Project files (STUBS)
+    // MARK: - Project files
 
     /// Writes the project as pretty JSON (`.editrush`) and clears `isDirty`.
-    public func save(to url: URL) throws {}
+    /// The project takes its name from the file name.
+    public func save(to url: URL) throws {
+        var p = project
+        p.name = url.deletingPathExtension().lastPathComponent
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(p).write(to: url, options: .atomic)
+        projectURL = url
+        if p != project {
+            project = p
+            revision += 1
+            changes.send(p)
+        }
+        cleanProject = p
+        isDirty = false
+    }
+
     /// Loads a `.editrush` file (replaces the project, clears undo).
-    public func open(_ url: URL) throws {}
+    /// Throws `ProjectFileError.newerVersion` for files from a newer EditRush; reports
+    /// media files that no longer exist in `statusMessage`.
+    public func open(_ url: URL) throws {
+        var p = try Self.decodeProject(Data(contentsOf: url))
+        p.name = url.deletingPathExtension().lastPathComponent
+        replaceProject(p, url: url)
+        reportMissingMedia()
+    }
+
     public func newProject() { replaceProject(.empty(), url: nil) }
-    /// Writes the current project to `EditorStore.autosaveURL` (cheap; call after edits, debounced).
-    public func autosave() {}
+
+    /// Writes the current project to `autosaveFileURL` plus a small sidecar recording `projectURL`.
+    /// Cheap: skipped when nothing changed since the last autosave; encoding and the atomic
+    /// write happen on a background queue (`flushPendingAutosaves()` waits for them).
+    public func autosave() {
+        _ = Self.terminationHook
+        if let last = lastAutosaved, last.revision == revision, last.url == projectURL { return }
+        lastAutosaved = (revision, projectURL)
+        let snapshot = project
+        let state = EditorAutosaveState(projectURL: projectURL)
+        let fileURL = autosaveFileURL
+        let stateURL = Self.autosaveStateURL(for: fileURL)
+        Self.autosaveQueue.async {
+            do {
+                try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
+                try JSONEncoder().encode(snapshot).write(to: fileURL, options: .atomic)
+            } catch {
+                NSLog("EditRush autosave failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Restores the autosave if present (on launch). Returns true if restored.
+    /// Restores `projectURL` from the sidecar; the restored project is not dirty.
     @discardableResult
-    public func restoreAutosave() -> Bool { false }
+    public func restoreAutosave() -> Bool {
+        Self.flushPendingAutosaves()
+        let fileURL = autosaveFileURL
+        guard let data = try? Data(contentsOf: fileURL), let p = try? Self.decodeProject(data) else { return false }
+        let state = (try? Data(contentsOf: Self.autosaveStateURL(for: fileURL)))
+            .flatMap { try? JSONDecoder().decode(EditorAutosaveState.self, from: $0) }
+        replaceProject(p, url: state?.projectURL)
+        lastAutosaved = (revision, projectURL)
+        reportMissingMedia()
+        return true
+    }
+
+    /// Blocks until queued autosave writes have finished (call before quitting; done automatically
+    /// when the app terminates).
+    public nonisolated static func flushPendingAutosaves() {
+        autosaveQueue.sync {}
+    }
 
     /// ~/Library/Application Support/EditRush/Autosave.editrush
     public static var autosaveURL: URL {
@@ -272,4 +286,69 @@ public final class EditorStore {
             .appendingPathComponent("EditRush", isDirectory: true)
         return dir.appendingPathComponent("Autosave.\(Project.fileExtension)")
     }
+
+    /// Sidecar next to the autosave file, e.g. `Autosave.state.json`.
+    static func autosaveStateURL(for fileURL: URL) -> URL {
+        fileURL.deletingPathExtension().appendingPathExtension("state.json")
+    }
+
+    private nonisolated static let autosaveQueue = DispatchQueue(label: "EditRush.autosave", qos: .utility)
+
+    private static let terminationHook: Void = {
+        #if canImport(AppKit)
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            EditorStore.flushPendingAutosaves()
+        }
+        #endif
+    }()
+
+    private static func decodeProject(_ data: Data) throws -> Project {
+        let decoder = JSONDecoder()
+        let probe: EditorProjectVersionProbe
+        do { probe = try decoder.decode(EditorProjectVersionProbe.self, from: data) } catch {
+            throw ProjectFileError.unreadable("not JSON")
+        }
+        if let v = probe.version, v > Project.currentVersion {
+            throw ProjectFileError.newerVersion(found: v, supported: Project.currentVersion)
+        }
+        do { return try decoder.decode(Project.self, from: data) } catch let error as DecodingError {
+            throw ProjectFileError.unreadable(Self.describe(error))
+        }
+    }
+
+    private static func describe(_ error: DecodingError) -> String {
+        func path(_ c: DecodingError.Context) -> String {
+            let p = c.codingPath.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
+            return p.isEmpty ? c.debugDescription : "\(p): \(c.debugDescription)"
+        }
+        switch error {
+        case let .keyNotFound(key, c): return "missing \(key.stringValue) at \(path(c))"
+        case let .typeMismatch(_, c), let .valueNotFound(_, c), let .dataCorrupted(c): return path(c)
+        @unknown default: return error.localizedDescription
+        }
+    }
+
+    private func reportMissingMedia() {
+        let missing = project.media.filter { !FileManager.default.fileExists(atPath: $0.url.path) }
+        guard !missing.isEmpty else { return }
+        let names = missing.prefix(3).map(\.url.lastPathComponent).joined(separator: ", ")
+        let more = missing.count > 3 ? " and \(missing.count - 3) more" : ""
+        statusMessage = "Missing media: \(names)\(more)"
+    }
+}
+
+/// One copied clip with the track it came from.
+struct EditorClipboardItem: Hashable, Sendable {
+    var clip: Clip
+    var trackKind: TrackKind
+    /// Index among tracks of the same kind (0 = V1 / A1).
+    var trackOrdinal: Int
+}
+
+private struct EditorAutosaveState: Codable, Sendable {
+    var projectURL: URL?
+}
+
+private struct EditorProjectVersionProbe: Decodable {
+    var version: Int?
 }
