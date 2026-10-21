@@ -4,14 +4,15 @@ extension EditorStore {
     // MARK: - Adding clips
 
     /// Places a clip for `mediaID` on the timeline.
-    /// - trackID: target track (must accept the media kind); nil = pick the lowest compatible
-    ///   track that is free at `time` for the clip's length, creating a new track if none is.
-    ///   An incompatible or locked `trackID` falls back to the automatic choice.
+    /// - trackID: target track (must accept the media kind; may be hidden); nil = pick the lowest
+    ///   visible, unlocked compatible track that is free at `time` for the clip's length, creating a
+    ///   new track if none is. An incompatible or locked `trackID` falls back to the automatic choice.
     /// - time: timeline start; nil = playhead. Overlaps are resolved to the nearest free start.
+    /// - coalesce: consecutive adds with the same key form one undo step (until `endCoalescing()`).
     /// Video/audio clips default to the full media duration; images default to 5 s.
     /// Selects the new clip and returns its id.
     @discardableResult
-    public func addClip(mediaID: UUID, trackID: UUID? = nil, at time: Seconds? = nil) -> UUID? {
+    public func addClip(mediaID: UUID, trackID: UUID? = nil, at time: Seconds? = nil, coalesce: String? = nil) -> UUID? {
         guard let m = media(mediaID) else { return nil }
         let canvas = project.canvas
         let duration = m.kind == .image || m.duration <= 0
@@ -19,7 +20,7 @@ extension EditorStore {
             : max(canvas.frameDuration, StoreTimeline.floorFrame(m.duration, canvas))
         var clip = Clip(mediaID: mediaID, start: canvas.quantize(max(0, time ?? playhead)), duration: duration)
         let kind: TrackKind = m.kind == .audio ? .audio : .video
-        mutate("Add Clip") { p in
+        mutate("Add Clip", coalesce: coalesce) { p in
             StoreTimeline.place(&clip, kind: kind, preferredTrack: trackID, topmostFirst: false, in: &p)
         }
         selection = [clip.id]
@@ -27,7 +28,7 @@ extension EditorStore {
     }
 
     /// Adds a 5 s text clip (default `TextStyle`) at `time` (nil = playhead) on `trackID`
-    /// (nil = topmost video track that is free there, creating a new video track if needed).
+    /// (nil = topmost visible, unlocked video track that is free there, creating a new video track if needed).
     @discardableResult
     public func addTextClip(at time: Seconds? = nil, trackID: UUID? = nil, style: TextStyle = TextStyle()) -> UUID? {
         let canvas = project.canvas
@@ -154,24 +155,39 @@ extension EditorStore {
         }
     }
 
-    /// Duplicates selected clips, placing each copy right after the original on its track
-    /// (nearest free spot). Selects the copies.
+    /// Duplicates the selected clips on unlocked tracks as a group: every copy goes on its
+    /// original's track, all shifted by one shared offset so they keep their relative timing —
+    /// the smallest offset, at least the selection's length, at which every copy fits.
+    /// Selects the copies.
     public func duplicateSelection() {
-        let originals = selectedClips
-        guard !originals.isEmpty else { return }
+        let group = clipsOnUnlockedTracks(selection)
+        guard let first = group.map(\.clip.start).min(), let last = group.map(\.clip.end).max() else { return }
         var copies: [UUID] = []
         mutate("Duplicate") { p in
-            for original in originals {
-                guard let l = p.locate(clip: original.id), !p.tracks[l.track].isLocked else { continue }
+            let span = p.canvas.quantize(last - first)
+            let shifts = StoreTimeline.validShifts(group, excluding: [], in: p)
+            guard let fit = shifts.first(where: { $0.hi >= span - StoreTimeline.epsilon }) else { return }
+            let shift = max(span, fit.lo)
+            for (ti, original) in group {
                 var copy = original
                 copy.id = UUID()
-                copy.start = p.canvas.quantize(p.tracks[l.track].nearestFreeStart(duration: copy.duration, near: original.end))
-                p.tracks[l.track].clips.append(copy)
-                StoreTimeline.sortClips(&p, track: l.track)
+                copy.start = p.canvas.quantize(original.start + shift)
+                p.tracks[ti].clips.append(copy)
                 copies.append(copy.id)
             }
+            for ti in Set(group.map(\.track)) { StoreTimeline.sortClips(&p, track: ti) }
         }
         if !copies.isEmpty { selection = Set(copies) }
+    }
+
+    /// Clips `ids` that sit on unlocked tracks, with their track indices.
+    private func clipsOnUnlockedTracks(_ ids: Set<UUID>) -> [(track: Int, clip: Clip)] {
+        guard !ids.isEmpty else { return [] }
+        var group: [(track: Int, clip: Clip)] = []
+        for (ti, track) in project.tracks.enumerated() where !track.isLocked {
+            for c in track.clips where ids.contains(c.id) { group.append((ti, c)) }
+        }
+        return group
     }
 
     // MARK: - Move & trim
@@ -192,6 +208,59 @@ extension EditorStore {
             StoreTimeline.sortClips(&p, track: target)
         }
         return true
+    }
+
+    /// Moves clips `ids` together by `delta` seconds (and `trackOffset` tracks), keeping their
+    /// relative timing. Clips on locked tracks stay put.
+    /// - delta: rounded to whole frames; when the group doesn't fit there, the nearest shift at
+    ///   which no clip goes below 0 or overlaps a clip outside `ids` is used instead (the group
+    ///   never splits up; like a single dragged clip it may jump past obstacles).
+    /// - trackOffset: moves every clip that many tracks up its kind's order (V1 → V2, A1 → A2;
+    ///   negative = down); clips never change track kind. Applied only when every destination
+    ///   exists and is unlocked; otherwise the clips stay on their tracks.
+    /// - coalesce: per-gesture key for live drags (one undo step until `endCoalescing()`).
+    public func moveClips(_ ids: Set<UUID>, by delta: Seconds, trackOffset: Int = 0, coalesce: String? = nil) {
+        let group = clipsOnUnlockedTracks(ids)
+        guard !group.isEmpty else { return }
+        let p = project
+        let frame = p.canvas.frameDuration
+        let wanted = delta.isFinite ? (delta / frame).rounded() * frame : 0
+        let moving = Set(group.map(\.clip.id))
+        let sources = group.map(\.track)
+
+        func destinations(_ offset: Int) -> [Int]? {
+            guard offset != 0 else { return sources }
+            var order: [TrackKind: [Int]] = [:]
+            for ti in p.tracks.indices { order[p.tracks[ti].kind, default: []].append(ti) }
+            var result: [Int] = []
+            for ti in sources {
+                let tracks = order[p.tracks[ti].kind] ?? []
+                guard let ordinal = tracks.firstIndex(of: ti), tracks.indices.contains(ordinal + offset),
+                      !p.tracks[tracks[ordinal + offset]].isLocked else { return nil }
+                result.append(tracks[ordinal + offset])
+            }
+            return result
+        }
+
+        var plan: (tracks: [Int], shift: Seconds)?
+        for offset in trackOffset == 0 ? [0] : [trackOffset, 0] {
+            guard let tracks = destinations(offset) else { continue }
+            let placed = zip(tracks, group).map { (track: $0, clip: $1.clip) }
+            if let shift = StoreTimeline.nearest(wanted, in: StoreTimeline.validShifts(placed, excluding: moving, in: p)) {
+                plan = (tracks, shift)
+                break
+            }
+        }
+        guard let plan, abs(plan.shift) > StoreTimeline.epsilon || plan.tracks != sources else { return }
+        mutate(group.count == 1 ? "Move Clip" : "Move Clips", coalesce: coalesce) { p in
+            for ti in Set(sources) { p.tracks[ti].clips.removeAll { moving.contains($0.id) } }
+            for (ti, item) in zip(plan.tracks, group) {
+                var c = item.clip
+                c.start = max(0, p.canvas.quantize(c.start + plan.shift))
+                p.tracks[ti].clips.append(c)
+            }
+            for ti in Set(sources + plan.tracks) { StoreTimeline.sortClips(&p, track: ti) }
+        }
     }
 
     /// Trims a clip edge to timeline time `t`, clamped by neighbours, media bounds (video/audio
@@ -233,8 +302,10 @@ extension EditorStore {
     /// Edits arbitrary clip properties (transform, color, text, fades, volume...).
     /// Values are clamped to valid ranges (fadeIn + fadeOut ≤ duration, opacity 0...1, etc).
     /// Timing changes are frame-quantized and kept overlap-free. Clips on locked tracks are not edited.
-    public func updateClip(_ id: UUID, _ actionName: String, coalesce: String? = nil, _ body: (inout Clip) -> Void) {
-        mutate(actionName, coalesce: coalesce) { p in
+    /// `coalesce` / `coalesceTimeout` work as in `mutate`.
+    public func updateClip(_ id: UUID, _ actionName: String, coalesce: String? = nil, coalesceTimeout: TimeInterval? = nil,
+                           _ body: (inout Clip) -> Void) {
+        mutate(actionName, coalesce: coalesce, coalesceTimeout: coalesceTimeout) { p in
             guard let l = p.locate(clip: id), !p.tracks[l.track].isLocked else { return }
             let original = p.tracks[l.track].clips[l.clip]
             var c = original
@@ -252,9 +323,11 @@ extension EditorStore {
 
     /// Moves a video clip's embedded audio onto an audio track as a separate audio clip
     /// (same media, start, sourceIn, duration, volume, fades) and sets `audioMuted` on the video clip.
-    /// Uses the lowest unlocked audio track that is free for the clip's range, else a new audio track.
-    public func detachAudio(_ clipID: UUID) {
-        mutate("Detach Audio") { p in
+    /// Uses the lowest visible, unlocked audio track that is free for the clip's range, else a new
+    /// audio track. Detaching several clips with one shared `coalesce` key forms one undo step
+    /// (until `endCoalescing()`).
+    public func detachAudio(_ clipID: UUID, coalesce: String? = nil) {
+        mutate("Detach Audio", coalesce: coalesce) { p in
             guard let l = p.locate(clip: clipID), p.tracks[l.track].kind == .video, !p.tracks[l.track].isLocked else { return }
             let video = p.tracks[l.track].clips[l.clip]
             guard let m = p.media(video.mediaID), m.kind == .video, m.hasAudio, !video.audioMuted else { return }

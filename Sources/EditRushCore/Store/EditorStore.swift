@@ -70,7 +70,8 @@ public final class EditorStore {
     public private(set) var redoActionName: String?
     public var canUndo: Bool { !undoStack.isEmpty }
     public var canRedo: Bool { !redoStack.isEmpty }
-    public static let undoLimit = 300
+    /// Maximum number of undo steps kept (the oldest are dropped).
+    public static let undoLimit = 1000
 
     // MARK: Autosave
     /// Where `autosave()` writes and `restoreAutosave()` reads. Defaults to `EditorStore.autosaveURL`.
@@ -85,14 +86,21 @@ public final class EditorStore {
     // MARK: - Core mutation
 
     /// Applies `body` to the project as one undoable action.
-    /// - Parameter coalesce: when non-nil and equal to the previous action's key within 1.5 s,
-    ///   no new undo step is recorded (use for slider drags / live dragging, e.g. "transform-<clipID>").
-    public func mutate(_ actionName: String, coalesce: String? = nil, _ body: (inout Project) -> Void) {
+    /// - Parameters:
+    ///   - coalesce: when non-nil and equal to the previous action's key, no new undo step is
+    ///     recorded. The key stays open until `endCoalescing()`, undo/redo, or a mutation with a
+    ///     different (or no) key — use a per-gesture key (e.g. "timeline-move-<UUID>") and call
+    ///     `endCoalescing()` when the gesture ends.
+    ///   - coalesceTimeout: only for edits with no end event (key repeats, color wells): also
+    ///     starts a new step when more than this many seconds passed since the previous edit.
+    public func mutate(_ actionName: String, coalesce: String? = nil, coalesceTimeout: TimeInterval? = nil,
+                       _ body: (inout Project) -> Void) {
         var next = project
         body(&next)
         guard next != project else { return }
         let now = Date()
-        let coalescing = coalesce != nil && coalesce == lastCoalesceKey && now.timeIntervalSince(lastCoalesceDate) < 1.5
+        let coalescing = coalesce != nil && coalesce == lastCoalesceKey
+            && coalesceTimeout.map { now.timeIntervalSince(lastCoalesceDate) < $0 } ?? true
         if !coalescing {
             undoStack.append((actionName, project))
             if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }

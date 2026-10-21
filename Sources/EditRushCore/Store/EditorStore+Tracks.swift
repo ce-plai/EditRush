@@ -142,7 +142,8 @@ extension EditorStore {
     }
 
     /// Moves the selected clips by `frames` (negative = left), clamped at 0 and by neighbours.
-    /// All selected clips on unlocked tracks move by the same amount; repeated nudges coalesce into one undo step.
+    /// All selected clips on unlocked tracks move by the same amount; nudges repeated within 1.5 s of each
+    /// other coalesce into one undo step.
     public func nudgeSelection(frames: Int) {
         guard frames != 0, !selection.isEmpty else { return }
         let frame = frameDuration
@@ -163,7 +164,7 @@ extension EditorStore {
         guard moving, allowed != 0 else { return }
         let delta = Double(allowed) * frame
         let targets = selection
-        mutate("Nudge", coalesce: "nudge-selection") { p in
+        mutate("Nudge", coalesce: "nudge-selection", coalesceTimeout: 1.5) { p in
             for ti in p.tracks.indices where !p.tracks[ti].isLocked {
                 for ci in p.tracks[ti].clips.indices where targets.contains(p.tracks[ti].clips[ci].id) {
                     p.tracks[ti].clips[ci].start = max(0, p.canvas.quantize(p.tracks[ti].clips[ci].start + delta))
