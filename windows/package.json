@@ -1,0 +1,17 @@
+{
+  "name": "editrush",
+  "productName": "EditRush",
+  "version": "1.0.0",
+  "description": "EditRush - a fast, simple video editor (Windows build).",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "package": "electron-packager . EditRush --platform=win32 --arch=x64 --out=dist --overwrite --icon=icon.ico --ignore=^/dist --ignore=^/test --ignore=^/scripts"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "^33.2.1"
+  }
+}

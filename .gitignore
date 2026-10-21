@@ -7,3 +7,8 @@ xcuserdata/
 .DS_Store
 .claude/
 .vscode/
+
+# Windows build
+windows/node_modules/
+windows/dist/
+windows/ffmpeg/
