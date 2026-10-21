@@ -215,6 +215,38 @@ public final class EditorStore {
     /// Snaps `t` to the nearest target within `thresholdSeconds` if snapping is enabled.
     public func snap(_ t: Seconds, excluding: Set<UUID> = [], thresholdSeconds: Seconds) -> Seconds { t }
 
+    // MARK: - Selection & clipboard (STUBS — implemented by the store module)
+
+    /// Selects every clip on unlocked tracks.
+    public func selectAll() {}
+    /// Copies the selected clips (with their track positions) to an internal clipboard.
+    public func copySelection() {}
+    /// Copy, then delete (non-ripple).
+    public func cutSelection() {}
+    /// True when the internal clipboard holds clips.
+    public var canPaste: Bool { false }
+    /// Pastes clipboard clips at the playhead, keeping their relative timing and tracks (falls back
+    /// to compatible tracks / new tracks when needed; overlaps resolve to the nearest free start).
+    /// Selects the pasted clips.
+    public func pasteAtPlayhead() {}
+    /// Moves the selected clips by `frames` (negative = left), clamped at 0 and by neighbours.
+    public func nudgeSelection(frames: Int) {}
+
+    // MARK: - Timeline zoom
+
+    /// Visible width in points of the timeline's clip area — set by the timeline view on resize.
+    public var timelineViewportWidth: Double = 1000
+    public static let zoomRange: ClosedRange<Double> = 5...2000
+    /// Multiplies `pixelsPerSecond` by `factor`, clamped to `zoomRange`.
+    public func zoom(by factor: Double) {
+        pixelsPerSecond = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, pixelsPerSecond * factor))
+    }
+    /// Fits the whole project (plus a little margin) into the visible timeline width.
+    public func zoomToFit() {
+        let d = max(project.duration, 5) * 1.05
+        pixelsPerSecond = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, timelineViewportWidth / d))
+    }
+
     // MARK: - Canvas
 
     public func setCanvas(_ c: CanvasSettings) {
