@@ -3,6 +3,7 @@
 // quit / close guard. The editor itself runs in the renderer (src/ui/app.js).
 
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -55,12 +56,48 @@ function createWindow() {
 
 function send(command, arg) { if (win) win.webContents.send('command', command, arg); }
 
+// MARK: - Recent projects (File > Open Recent and the taskbar jump list)
+
+const RECENT_LIMIT = 10;
+const recentFile = () => path.join(app.getPath('userData'), 'recent.json');
+
+function readRecent() {
+  if (!fs.existsSync(recentFile())) return [];
+  const list = JSON.parse(fs.readFileSync(recentFile(), 'utf8'));
+  if (!Array.isArray(list)) throw new Error(`${recentFile()} does not hold a list`);
+  return list;
+}
+
+function writeRecent(list) {
+  fs.mkdirSync(path.dirname(recentFile()), { recursive: true });
+  fs.writeFileSync(recentFile(), JSON.stringify(list, null, 2));
+}
+
+function noteRecent(file) {
+  const list = readRecent().filter(f => f.toLowerCase() !== file.toLowerCase());
+  list.unshift(file);
+  writeRecent(list.slice(0, RECENT_LIMIT));
+  app.addRecentDocument(file);
+  buildMenu();
+}
+
+function recentMenu() {
+  const files = readRecent().filter(f => fs.existsSync(f));
+  return [
+    ...(files.length ? files.map(f => ({ label: path.basename(f, path.extname(f)), sublabel: f, toolTip: f, click: () => send('openRecent', f) }))
+      : [{ label: 'No Recent Projects', enabled: false }]),
+    { type: 'separator' },
+    { label: 'Clear Menu', enabled: files.length > 0, click: () => { writeRecent([]); app.clearRecentDocuments(); buildMenu(); } },
+  ];
+}
+
 function buildMenu() {
   const item = (label, command, accelerator, extra = {}) => ({ label, accelerator, click: () => send(command), ...extra });
   const template = [
     { label: '&File', submenu: [
       item('New Project', 'newProject', 'Ctrl+N'),
       item('Open...', 'openProject', 'Ctrl+O'),
+      { label: 'Open Recent', submenu: recentMenu() },
       { type: 'separator' },
       item('Save', 'save', 'Ctrl+S'),
       item('Save As...', 'saveAs', 'Ctrl+Shift+S'),
@@ -132,6 +169,7 @@ function buildMenu() {
   // keys alone while typing in a text field. The menu shows them but does not register them.
   for (const menu of template) {
     for (const entry of menu.submenu) {
+      if (entry.submenu) continue;
       if (entry.accelerator && entry.command !== 'devtools') entry.registerAccelerator = false;
     }
   }
@@ -151,6 +189,8 @@ ipcMain.on('confirm-close', () => {
   allowClose = true;
   if (win) win.close();
 });
+
+ipcMain.on('note-recent', (_e, file) => noteRecent(file));
 
 ipcMain.on('set-title', (_e, title) => { if (win) win.setTitle(title); });
 

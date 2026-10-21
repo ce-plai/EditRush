@@ -73,6 +73,11 @@ class Documents {
     this.load(r.filePaths[0]);
   }
 
+  async openRecent(file) {
+    if (!(await this.confirmDiscardingChanges())) return;
+    this.load(file);
+  }
+
   /// Saves to the project's file, or asks for one. Returns false if cancelled or failed.
   async save() {
     if (!this.store.projectPath) return this.saveAs();
@@ -173,6 +178,7 @@ class Documents {
       this.store.open(file);
       this.flushedRevision = this.store.revision;
       this.store.autosave();
+      ipcRenderer.send('note-recent', file);
     } catch (e) {
       console.error('EditRush open failed', e);
       this.store.setStatus(`Couldn't open "${path.basename(file)}": ${e.message}`);
@@ -184,6 +190,7 @@ class Documents {
       this.store.save(file);
       this.flushedRevision = this.store.revision;
       this.store.autosave();
+      ipcRenderer.send('note-recent', file);
       if (announce) this.store.setStatus(`Saved "${path.basename(file)}"`);
       return true;
     } catch (e) {

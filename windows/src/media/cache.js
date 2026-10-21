@@ -5,6 +5,7 @@
 // window regains focus, so a reconnected drive reloads).
 
 const fs = require('fs');
+const path = require('path');
 const ff = require('./ffmpeg');
 const { mediaPath } = require('../core/store');
 
@@ -62,8 +63,8 @@ class MediaCache {
     const file = mediaPath(media);
     if (!fs.existsSync(file)) return Promise.reject(new Error(`missing file ${file}`));
     switch (kind) {
-      case 'still': return loadImage(media.url);
-      case 'poster': return media.kind === 'image' ? loadImage(media.url) : poster(file, media);
+      case 'still': return still(file, media);
+      case 'poster': return media.kind === 'image' ? still(file, media) : poster(file, media);
       case 'filmstrip': return filmstrip(file, media);
       case 'waveform': return waveform(file, media);
       case 'audio': return audioBuffer(file);
@@ -80,6 +81,27 @@ function loadImage(url) {
     img.onerror = () => reject(new Error(`could not decode image ${url}`));
     img.src = url;
   });
+}
+
+/// Formats Chromium cannot display; ffmpeg decodes them to PNG first.
+const CONVERTED_IMAGE_EXTENSIONS = new Set(['tif', 'tiff', 'heic', 'heif']);
+/// Long-side limit for converted stills (a 45 MP phone photo becomes 8192 px wide).
+const MAX_CONVERTED_DIMENSION = 8192;
+
+function still(file, media) {
+  const ext = path.extname(file).slice(1).toLowerCase();
+  return CONVERTED_IMAGE_EXTENSIONS.has(ext) ? convertedImage(file) : loadImage(media.url);
+}
+
+/// Decodes `file` with ffmpeg (which applies HEIC rotation and grid tiles) into an <img>.
+async function convertedImage(file) {
+  const m = MAX_CONVERTED_DIMENSION;
+  const { stdout } = await ff.run('ffmpeg', ['-v', 'error', '-i', file, '-frames:v', '1',
+    '-vf', `scale='min(${m},iw)':'min(${m},ih)':force_original_aspect_ratio=decrease,format=rgba`,
+    '-f', 'image2pipe', '-vcodec', 'png', '-compression_level', '1', 'pipe:1']);
+  if (!stdout.length) throw new Error(`ffmpeg decoded no image from ${file}`);
+  const url = URL.createObjectURL(new Blob([stdout], { type: 'image/png' }));
+  return loadImage(url);
 }
 
 async function jpegToImage(buffer) {

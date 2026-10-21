@@ -10,7 +10,9 @@ ffmpeg (probing, thumbnails, waveforms, audio decoding, and export).
 
 - Windows 10/11 x64
 - Node.js (for building only)
-- ffmpeg and ffprobe on `PATH` (e.g. the gyan.dev builds), or copied into `windows\ffmpeg\`
+- ffmpeg and ffprobe: copy `ffmpeg.exe`, `ffprobe.exe` and `LICENSE` from the gyan.dev release
+  "essentials" build (7.1 or later, needed for HEIC) into `windows\ffmpeg\`. That folder is not in
+  git; `npm run package` bundles it into the app. Without it, ffmpeg on `PATH` is used.
 
 ## Run, test, package
 

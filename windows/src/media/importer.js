@@ -7,8 +7,8 @@ const M = require('../core/model');
 const ff = require('./ffmpeg');
 
 const videoExtensions = new Set(['mp4', 'mov', 'm4v']);
-const audioExtensions = new Set(['mp3', 'wav', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'aif', 'aiff', 'flac']);
-const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp']);
+const audioExtensions = new Set(['mp3', 'wav', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'aif', 'aiff', 'caf', 'flac']);
+const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'heic', 'heif']);
 const supportedExtensions = new Set([...videoExtensions, ...audioExtensions, ...imageExtensions]);
 
 const ext = f => path.extname(f).slice(1).toLowerCase();

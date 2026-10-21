@@ -6,7 +6,7 @@
 
 const M = require('../core/model');
 const compositor = require('../engine/compositor');
-const { h, icon } = require('./dom');
+const { h, icon, contextMenu } = require('./dom');
 const fmt = require('./format');
 const { mediaIDFromDrag } = require('./mediabin');
 const { droppedPathsOf } = require('./drop');
@@ -35,7 +35,8 @@ class Preview {
       h('button.round-btn', { title: 'Previous Frame (Left)', onclick: () => app.command('prevFrame') }, icon('prev')),
       this.playBtn,
       h('button.round-btn', { title: 'Next Frame (Right)', onclick: () => app.command('nextFrame') }, icon('next')),
-      h('button.round-btn', { title: 'Go to End (End)', onclick: () => app.command('goToEnd') }, icon('end')));
+      h('button.round-btn', { title: 'Go to End (End)', onclick: () => app.command('goToEnd') }, icon('end')),
+      this.canvasBtn = h('button.canvas-menu', { onclick: () => this.showCanvasMenu() }));
     this.root = h('div.panel.preview', this.stage, transport);
 
     this.session = null;
@@ -45,7 +46,7 @@ class Preview {
     this.installPointer();
     this.installDrops();
     new ResizeObserver(() => this.layout()).observe(this.stage);
-    this.store.on('project', () => { this.layout(); this.drawOverlay(); });
+    this.store.on('project', () => { this.layout(); this.drawOverlay(); this.updateTransport(); });
     this.store.on('ui', () => { this.updateTransport(); this.drawOverlay(); });
     app.playback.onState(() => this.updateTransport());
     this.layout();
@@ -77,7 +78,33 @@ class Preview {
     this.drawOverlay();
   }
 
+  /// Canvas size presets; frame rate and background colour are kept.
+  showCanvasMenu() {
+    const s = this.store, c = s.project.canvas;
+    const r = this.canvasBtn.getBoundingClientRect();
+    contextMenu(r.left, r.bottom + 4, M.CanvasPresets.map(p => ({
+      label: p.name,
+      shortcut: p.width === c.width && p.height === c.height ? 'current' : `${p.width}x${p.height}`,
+      action: () => { const n = M.clone(c); n.width = p.width; n.height = p.height; s.setCanvas(n); },
+    })));
+    // Open the menu upwards when it would run off the bottom of the window.
+    const menu = document.querySelector('.context-menu');
+    if (menu) menu.style.top = `${Math.max(4, r.top - 4 - menu.getBoundingClientRect().height)}px`;
+  }
+
+  updateCanvasButton() {
+    const c = this.store.project.canvas;
+    const key = `${c.width}x${c.height}`;
+    if (key === this.canvasKey) return;
+    this.canvasKey = key;
+    const preset = M.CanvasPresets.find(p => p.width === c.width && p.height === c.height);
+    this.canvasBtn.title = `Canvas size: ${preset ? preset.name : 'Custom'}`;
+    this.canvasBtn.replaceChildren(icon(c.width >= c.height ? 'landscape' : 'portrait', 13), h('b', aspectLabel(c)),
+      h('span', `${c.width}x${c.height}`), icon('chevronDown', 10));
+  }
+
   updateTransport() {
+    this.updateCanvasButton();
     const s = this.store, fps = s.project.canvas.frameRate;
     this.tc.replaceChildren(fmt.timecode(s.playhead, fps), h('span', ` / ${fmt.timecode(M.projectDuration(s.project), fps)}`));
     const playing = this.app.playback.isPlaying;
@@ -415,6 +442,14 @@ function snap(candidates, targets) {
     if (Math.abs(d) <= SNAP && (!best || Math.abs(d) < Math.abs(best.adjust))) best = { adjust: d, target: t };
   }
   return best;
+}
+
+/// Short aspect label, e.g. "16:9", "9:16", "4:5" (or "2.39:1" for unusual ratios).
+function aspectLabel(c) {
+  const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+  const g = Math.max(1, gcd(c.width, c.height));
+  const w = c.width / g, hh = c.height / g;
+  return w > 50 || hh > 50 ? `${(c.width / Math.max(1, c.height)).toFixed(2)}:1` : `${w}:${hh}`;
 }
 
 function normalizedDegrees(r) {

@@ -221,6 +221,10 @@ class Exporter {
     out.width = size.width; out.height = size.height;
     const ctx = out.getContext('2d', { willReadFrequently: true });
     const started = performance.now();
+    // Milliseconds spent per stage, logged when the export ends (see `stats`).
+    const ms = { decode: 0, compose: 0, readback: 0, write: 0 };
+    let mark = performance.now();
+    const lap = k => { const now = performance.now(); ms[k] += now - mark; mark = now; };
 
     for (let n = 0; n < frames; n++) {
       if (this.cancelled) throw new CancelError();
@@ -236,7 +240,9 @@ class Exporter {
       for (const [id, d] of decoders) if (!activeIDs.has(id)) { d.close(); decoders.delete(id); }
 
       const videoFrames = new Map();
+      lap('compose');
       for (const id of activeIDs) videoFrames.set(id, await decoders.get(id).frame(n));
+      lap('decode');
       const missingLayers = compositor.composeFrame(ctx, size.width, size.height, project, t, layer => {
         if (layer.media.kind === 'image') {
           const img = this.cache.get('still', layer.media);
@@ -246,8 +252,11 @@ class Exporter {
         return c ? { image: c, width: c.width, height: c.height } : null;
       });
       if (missingLayers) throw new Error(`a frame at ${t.toFixed(2)}s could not be drawn (${missingLayers} layer(s) unavailable)`);
+      lap('compose');
       const data = ctx.getImageData(0, 0, size.width, size.height).data;
+      lap('readback');
       await write(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+      lap('write');
 
       this.progress = (n + 1) / frames * 0.99;
       const elapsed = (performance.now() - started) / 1000;
@@ -256,6 +265,10 @@ class Exporter {
     }
     enc.stdin.end();
     await encDone;
+    lap('write');
+    const total = (performance.now() - started) / 1000;
+    this.stats = { frames, seconds: total, fps: frames / total, ms: Object.fromEntries(Object.entries(ms).map(([k, v]) => [k, Math.round(v)])) };
+    console.info('EditRush export stats', JSON.stringify(this.stats));
   }
 
   makeDecoder(project, layer, scale, fps) {

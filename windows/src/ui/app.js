@@ -187,6 +187,7 @@ class App {
     switch (name) {
       case 'newProject': return this.documents.newProject();
       case 'openProject': return this.documents.openWithDialog();
+      case 'openRecent': return this.documents.openRecent(arg);
       case 'save': return this.documents.save();
       case 'saveAs': return this.documents.saveAs();
       case 'importMedia': return this.documents.importWithDialog();
@@ -312,7 +313,7 @@ class App {
   // MARK: IPC from the main process
 
   installIPC() {
-    ipcRenderer.on('command', (_e, name) => this.command(name));
+    ipcRenderer.on('command', (_e, name, arg) => this.command(name, arg));
     ipcRenderer.on('open-files', (_e, files) => this.documents.openFiles(files));
     ipcRenderer.on('window-focus', () => this.cache.retryFailed());
     ipcRenderer.on('request-close', () => this.requestClose());

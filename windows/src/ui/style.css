@@ -86,6 +86,10 @@ input, textarea, select { font: inherit; color: var(--text); }
   border-top: 1px solid var(--divider); background: var(--panel-header); position: relative; }
 .transport .tc { position: absolute; left: 12px; font: 500 12px Consolas, monospace; color: var(--text); }
 .transport .tc span { color: var(--text2); }
+.canvas-menu { position: absolute; right: 12px; display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px;
+  border: none; border-radius: 6px; background: var(--raised); cursor: pointer; font-size: 12px; }
+.canvas-menu span { color: var(--text2); font-size: 11px; }
+.canvas-menu:hover { background: #444448; }
 .round-btn { width: 30px; height: 30px; border-radius: 15px; border: none; background: transparent; display: flex;
   align-items: center; justify-content: center; cursor: pointer; }
 .round-btn:hover { background: rgba(255,255,255,0.08); }

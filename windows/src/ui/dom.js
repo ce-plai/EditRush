@@ -87,6 +87,9 @@ const ICONS = {
   check: 'M4 12l5 5L20 6',
   close: 'M6 6l12 12M18 6 6 18',
   folder: 'M3 6h6l2 2h10v11H3z',
+  chevronDown: 'M6 9l6 6 6-6',
+  landscape: 'M3 7h18v10H3z',
+  portrait: 'M7 3h10v18H7z',
 };
 
 function icon(name, size = 16) {
