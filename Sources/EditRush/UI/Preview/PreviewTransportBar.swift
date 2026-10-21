@@ -104,7 +104,7 @@ private struct PreviewPressableStyle: ButtonStyle {
     }
 }
 
-/// Canvas aspect / size menu plus the viewer zoom label.
+/// Canvas aspect / size menu.
 private struct PreviewCanvasMenu: View {
     @Environment(EditorStore.self) private var store
 
@@ -117,61 +117,48 @@ private struct PreviewCanvasMenu: View {
 
     private func content(detailed: Bool) -> some View {
         let canvas = store.project.canvas
-        return HStack(spacing: 10) {
-            Menu {
-                ForEach(CanvasSettings.presets, id: \.name) { preset in
-                    Button {
-                        var next = preset.settings
-                        next.frameRate = canvas.frameRate
-                        next.backgroundColor = canvas.backgroundColor
-                        store.setCanvas(next)
-                    } label: {
-                        let current = preset.settings.width == canvas.width && preset.settings.height == canvas.height
-                        if current {
-                            Label(preset.name, systemImage: "checkmark")
-                        } else {
-                            Text(preset.name)
-                        }
+        return Menu {
+            ForEach(CanvasSettings.presets, id: \.name) { preset in
+                Button {
+                    var next = preset.settings
+                    next.frameRate = canvas.frameRate
+                    next.backgroundColor = canvas.backgroundColor
+                    store.setCanvas(next)
+                } label: {
+                    let current = preset.settings.width == canvas.width && preset.settings.height == canvas.height
+                    if current {
+                        Label(preset.name, systemImage: "checkmark")
+                    } else {
+                        Text(preset.name)
                     }
                 }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: canvas.width >= canvas.height ? "rectangle" : "rectangle.portrait")
-                        .font(.system(size: 11, weight: .medium))
-                    Text(PreviewCanvasLabel.ratio(canvas))
-                        .font(.system(size: 12, weight: .semibold))
-                    if detailed {
-                        Text(verbatim: "\(canvas.width)×\(canvas.height)")
-                            .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: canvas.width >= canvas.height ? "rectangle" : "rectangle.portrait")
+                    .font(.system(size: 11, weight: .medium))
+                Text(PreviewCanvasLabel.ratio(canvas))
+                    .font(.system(size: 12, weight: .semibold))
+                if detailed {
+                    Text(verbatim: "\(canvas.width)×\(canvas.height)")
+                        .font(.system(size: 11).monospacedDigit())
                         .foregroundStyle(Theme.textSecondary)
                 }
-                .foregroundStyle(Theme.textPrimary)
-                .padding(.horizontal, 9)
-                .frame(height: 26)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.raised))
-                .contentShape(Rectangle())
-            }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .focusable(false)
-            .help("Canvas size: \(PreviewCanvasLabel.presetName(canvas) ?? "Custom")")
-
-            if detailed {
-                Text("Fit")
-                    .font(.system(size: 11, weight: .medium))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(Theme.textSecondary)
-                    .padding(.horizontal, 7)
-                    .frame(height: 22)
-                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.divider, lineWidth: 1))
-                    .help("The viewer is scaled to fit the panel")
             }
+            .foregroundStyle(Theme.textPrimary)
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.raised))
+            .contentShape(Rectangle())
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
+        .focusable(false)
+        .help("Canvas size: \(PreviewCanvasLabel.presetName(canvas) ?? "Custom")")
     }
 }

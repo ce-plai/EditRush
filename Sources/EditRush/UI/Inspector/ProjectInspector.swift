@@ -92,7 +92,7 @@ struct ProjectInspector: View {
                     InspectorColorRow(title: "Background", color: canvas.backgroundColor, supportsOpacity: false) { rgba in
                         var c = canvas
                         c.backgroundColor = RGBA(rgba.r, rgba.g, rgba.b, 1)
-                        store.mutate("Change Background", coalesce: "inspector-background") { $0.canvas = c }
+                        store.mutate("Change Background", coalesce: "inspector-background", coalesceTimeout: 1.5) { $0.canvas = c }
                     }
                 }
 

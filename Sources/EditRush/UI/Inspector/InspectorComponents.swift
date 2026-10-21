@@ -143,7 +143,7 @@ struct InspectorSlider: View {
 // MARK: - Numeric field
 
 /// Small numeric text field that commits on Return or focus loss, clamping to `range`.
-/// Escape reverts to the current value.
+/// Return also ends editing so editor shortcuts work again; Escape reverts and ends editing.
 struct InspectorNumberField: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -169,7 +169,10 @@ struct InspectorNumberField: View {
             .onAppear { text = InspectorFormat.number(value, decimals: decimals) }
             .onChange(of: value) { _, v in if !focused { text = InspectorFormat.number(v, decimals: decimals) } }
             .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
-            .onSubmit { commit() }
+            .onSubmit {
+                commit()
+                focused = false
+            }
             .onExitCommand {
                 text = InspectorFormat.number(value, decimals: decimals)
                 focused = false
@@ -405,6 +408,7 @@ struct InspectorInfoRow: View {
 }
 
 /// Plain text field that keeps a local draft and commits on Return / focus loss.
+/// Return also ends editing; Escape reverts and ends editing.
 struct InspectorTextField: View {
     let text: String
     var placeholder = ""
@@ -428,7 +432,10 @@ struct InspectorTextField: View {
             .onAppear { draft = text }
             .onChange(of: text) { _, t in if !focused { draft = t } }
             .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
-            .onSubmit { commit() }
+            .onSubmit {
+                commit()
+                focused = false
+            }
             .onExitCommand { draft = text; focused = false }
             .onDisappear { commit() }
     }
@@ -497,8 +504,10 @@ struct InspectorClipEdit {
     let clipID: UUID
 
     /// Edits the clip; `field` groups consecutive edits of one control into a single undo step.
-    func callAsFunction(_ action: String, field: String? = nil, _ body: (inout Clip) -> Void) {
-        store.updateClip(clipID, action, coalesce: field.map { "inspector-\($0)-\(clipID.uuidString)" }, body)
+    /// Pass `timeout` for controls with no end event (colour wells): a pause that long starts a new step.
+    func callAsFunction(_ action: String, field: String? = nil, timeout: TimeInterval? = nil, _ body: (inout Clip) -> Void) {
+        store.updateClip(clipID, action, coalesce: field.map { "inspector-\($0)-\(clipID.uuidString)" },
+                         coalesceTimeout: timeout, body)
     }
 
     /// Slider `onEditingChanged` handler: closes the coalescing window when a drag / commit ends.

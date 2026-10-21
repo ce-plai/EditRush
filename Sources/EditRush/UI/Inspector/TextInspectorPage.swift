@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import CoreText
 import EditRushCore
 
@@ -14,7 +15,7 @@ struct TextInspectorPage: View {
 
         VStack(spacing: 0) {
             InspectorSection("Text") {
-                InspectorTextEditor(text: style.text, onChange: { newText in
+                InspectorTextEditor(text: style.text, clipID: clip.id, onChange: { newText in
                     edit("Edit Text", field: "text") { $0.text?.text = newText }
                 }, onEnd: { edit.editingChanged(false) })
             }
@@ -48,11 +49,11 @@ struct TextInspectorPage: View {
 
             InspectorSection("Appearance") {
                 InspectorColorRow(title: "Text color", color: style.color) { rgba in
-                    edit("Text Color", field: "text-color") { $0.text?.color = rgba }
+                    edit("Text Color", field: "text-color", timeout: Self.colorWellTimeout) { $0.text?.color = rgba }
                 }
                 InspectorColorRow(title: "Background box", color: style.backgroundColor.a > 0 ? style.backgroundColor : RGBA(0, 0, 0, 0.6),
                                   set: { rgba in
-                                      edit("Text Background", field: "text-background") { $0.text?.backgroundColor = rgba }
+                                      edit("Text Background", field: "text-background", timeout: Self.colorWellTimeout) { $0.text?.backgroundColor = rgba }
                                   }, leading: {
                                       Toggle("", isOn: Binding(get: { style.backgroundColor.a > 0 }, set: { on in
                                           edit(on ? "Show Text Background" : "Hide Text Background") {
@@ -74,13 +75,16 @@ struct TextInspectorPage: View {
                                         set: { $0.text?.outlineWidth = ($1 / 100).inspectorClamped(to: 0...0.25) }),
                     range: 0...25, defaultValue: 0, unit: "%", onEditingChanged: edit.editingChanged)
                 InspectorColorRow(title: "Outline color", color: style.outlineColor) { rgba in
-                    edit("Outline Color", field: "outline-color") { $0.text?.outlineColor = rgba }
+                    edit("Outline Color", field: "outline-color", timeout: Self.colorWellTimeout) { $0.text?.outlineColor = rgba }
                 }
                 .disabled(style.outlineWidth <= 0)
                 .opacity(style.outlineWidth <= 0 ? 0.5 : 1)
             }
         }
     }
+
+    /// Colour wells report no end of editing, so a pause this long starts a new undo step.
+    private static let colorWellTimeout: TimeInterval = 1.5
 
     private static func alignmentIcon(_ a: TextAlignmentOption) -> String {
         switch a {
@@ -92,14 +96,19 @@ struct TextInspectorPage: View {
 }
 
 /// Multi-line editor that pushes every keystroke to the store (coalesced into one undo step).
+/// Return inserts a new line; Escape or a click elsewhere ends editing. Takes focus with all text
+/// selected when `InspectorFocus` requests text editing for `clipID`.
 struct InspectorTextEditor: View {
     let text: String
+    var clipID: UUID?
     let onChange: (String) -> Void
     /// Called when editing ends (focus leaves the editor).
     let onEnd: () -> Void
     @FocusState private var focused: Bool
+    @State private var selectsAllOnFocus = false
 
     var body: some View {
+        let request = InspectorFocus.shared.textEditRequest.flatMap { $0.clipID == clipID ? $0 : nil }
         TextEditor(text: Binding(get: { text }, set: { if $0 != text { onChange($0) } }))
             .font(.system(size: 13))
             .foregroundStyle(Theme.textPrimary)
@@ -110,7 +119,35 @@ struct InspectorTextEditor: View {
             .frame(height: 74)
             .background(RoundedRectangle(cornerRadius: 6).fill(Theme.windowBackground))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? Theme.accent : Theme.divider, lineWidth: 1))
-            .onChange(of: focused) { _, isFocused in if !isFocused { onEnd() } }
+            .onExitCommand { focused = false }
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused {
+                    onEnd()
+                } else if selectsAllOnFocus {
+                    selectsAllOnFocus = false
+                    Self.selectAllInFocusedEditor()
+                }
+            }
+            .onChange(of: request, initial: true) { _, request in
+                guard let request else { return }
+                // Focus once the editor is in its window (it may have just been created).
+                DispatchQueue.main.async {
+                    InspectorFocus.shared.consume(request)
+                    if focused {
+                        Self.selectAllInFocusedEditor()
+                    } else {
+                        selectsAllOnFocus = true
+                        focused = true
+                    }
+                }
+            }
+    }
+
+    /// Selects all text so typing replaces the placeholder title (after focus has settled).
+    private static func selectAllInFocusedEditor() {
+        DispatchQueue.main.async {
+            (NSApp.keyWindow?.firstResponder as? NSTextView)?.selectAll(nil)
+        }
     }
 }
 
