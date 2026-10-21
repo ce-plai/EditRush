@@ -6,6 +6,8 @@ import EditRushCore
 /// Never reads `store.playhead`, so playback does not re-render it.
 struct InspectorView: View {
     @Environment(EditorStore.self) private var store
+    /// `store.revision` at the last selection change, to tell a just-added title from a re-selected one.
+    @State private var selectionRevision = 0
 
     var body: some View {
         let selection = store.selection
@@ -25,7 +27,25 @@ struct InspectorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.panelBackground)
         .environment(\.colorScheme, .dark)
+        .onAppear { InspectorFocus.shared.installClickMonitor() }
+        .onChange(of: selection) { selectionChanged() }
     }
+
+    /// A title that was just added (⌘T, toolbar, context menu) opens for typing; a pending
+    /// text-edit request for a clip that is no longer selected is dropped.
+    private func selectionChanged() {
+        defer { selectionRevision = store.revision }
+        let focus = InspectorFocus.shared
+        let clip = store.primarySelection
+        if let clip, clip.isText, store.revision != selectionRevision, store.undoActionName == Self.addTitleActionName {
+            focus.requestTextEditing(clip.id)
+        } else if let request = focus.textEditRequest, request.clipID != clip?.id {
+            focus.consume(request)
+        }
+    }
+
+    /// Undo name of `EditorStore.addTextClip`.
+    private static let addTitleActionName = "Add Text"
 }
 
 /// Title bar at the top of the inspector.

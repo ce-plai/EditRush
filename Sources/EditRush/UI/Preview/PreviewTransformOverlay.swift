@@ -141,15 +141,20 @@ struct PreviewTransformOverlay: View {
     }
 
     private func begin(at p: CGPoint) {
+        InspectorFocus.endTextEditing()
         if tracker.session?.didEdit == true { store.endCoalescing() }
         setHover(nil)
         let selectionHit = selectionRegion(at: p)
 
-        // Double-click picks the topmost text clip under the cursor (the inspector edits it).
+        // Double-click picks the topmost text clip under the cursor and opens its text for typing
+        // in the inspector.
         if (NSApp.currentEvent?.clickCount ?? 1) >= 2,
-           let text = topmostClip(at: p, preferText: true), text.clip.isText, text.clip.id != selectionHit?.clip.id {
-            startMove(text.clip, track: text.track, frame: text.frame, at: p, select: true)
-            return
+           let text = topmostClip(at: p, preferText: true), text.clip.isText {
+            defer { InspectorFocus.shared.requestTextEditing(text.clip.id) }
+            if text.clip.id != selectionHit?.clip.id {
+                startMove(text.clip, track: text.track, frame: text.frame, at: p, select: true)
+                return
+            }
         }
         if let hit = selectionHit {
             let mode: PreviewDragSession.Mode

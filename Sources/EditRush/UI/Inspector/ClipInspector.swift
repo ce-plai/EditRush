@@ -1,12 +1,14 @@
 import SwiftUI
 import EditRushCore
 
-/// What a clip shows, derived from its media (text clips have none).
+/// What a clip shows, derived from its media (text clips have none) and its track: any clip on
+/// an audio track (including audio detached from a video file) is audio.
 enum InspectorClipKind {
     case video, image, audio, text
 
-    init(clip: Clip, media: MediaItem?) {
+    init(clip: Clip, media: MediaItem?, trackKind: TrackKind? = nil) {
         if clip.isText { self = .text; return }
+        if trackKind == .audio { self = .audio; return }
         switch media?.kind {
         case .audio: self = .audio
         case .image: self = .image
@@ -83,23 +85,32 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 struct ClipInspector: View {
     let clip: Clip
     @Environment(EditorStore.self) private var store
-    /// Last chosen page, remembered across clips and launches.
+    /// Last chosen page for media clips, remembered across clips and launches.
     @AppStorage("inspector.tab") private var storedTab = InspectorTab.transform.rawValue
+    /// Last chosen page for titles, which start on Text.
+    @AppStorage("inspector.tab.title") private var storedTitleTab = InspectorTab.text.rawValue
 
     var body: some View {
         let media = store.media(clip.mediaID)
-        let kind = InspectorClipKind(clip: clip, media: media)
+        let kind = InspectorClipKind(clip: clip, media: media, trackKind: store.project.track(containing: clip.id)?.kind)
         let tabs = InspectorTab.available(for: kind, media: media)
-        let tab = InspectorTab(rawValue: storedTab).flatMap { tabs.contains($0) ? $0 : nil } ?? tabs[0]
+        let wantsText = kind == .text && InspectorFocus.shared.textEditRequest?.clipID == clip.id
+        let stored = InspectorTab(rawValue: kind == .text ? storedTitleTab : storedTab)
+        let tab = wantsText ? .text : stored.flatMap { tabs.contains($0) ? $0 : nil } ?? tabs[0]
 
         VStack(spacing: 0) {
             ClipInspectorHeader(clip: clip, media: media, kind: kind)
-            InspectorTabBar(tabs: tabs, selection: tab) { storedTab = $0.rawValue }
+            InspectorTabBar(tabs: tabs, selection: tab) { selected in
+                if kind == .text { storedTitleTab = selected.rawValue } else { storedTab = selected.rawValue }
+            }
             ScrollView(.vertical) {
                 page(tab, media: media, kind: kind)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .scrollIndicators(.automatic)
+        }
+        .onChange(of: wantsText, initial: true) { _, wants in
+            if wants { storedTitleTab = InspectorTab.text.rawValue }
         }
     }
 
@@ -133,10 +144,10 @@ struct ClipInspectorHeader: View {
 
     private var facts: String {
         var parts = [kind.title]
-        if let media, media.hasVisual, media.pixelWidth > 0 {
+        if kind != .audio, let media, media.hasVisual, media.pixelWidth > 0 {
             parts.append("\(media.pixelWidth)×\(media.pixelHeight)")
         }
-        if let media, media.kind == .video, media.frameRate > 0 {
+        if kind == .video, let media, media.kind == .video, media.frameRate > 0 {
             parts.append(InspectorFormat.number(media.frameRate, decimals: media.frameRate.rounded() == media.frameRate ? 0 : 2) + " fps")
         }
         if let track = store.project.track(containing: clip.id) {

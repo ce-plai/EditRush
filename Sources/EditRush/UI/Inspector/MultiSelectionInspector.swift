@@ -12,7 +12,11 @@ struct MultiSelectionInspector: View {
 
     private var breakdown: String {
         var counts: [InspectorClipKind: Int] = [:]
-        for clip in clips { counts[InspectorClipKind(clip: clip, media: store.media(clip.mediaID)), default: 0] += 1 }
+        for clip in clips {
+            let kind = InspectorClipKind(clip: clip, media: store.media(clip.mediaID),
+                                         trackKind: store.project.track(containing: clip.id)?.kind)
+            counts[kind, default: 0] += 1
+        }
         let order: [InspectorClipKind] = [.video, .image, .text, .audio]
         return order.compactMap { kind in
             counts[kind].map { "\($0) \(kind.title.lowercased())" }

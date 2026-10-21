@@ -97,14 +97,21 @@ private struct PreviewStage: View {
         return true
     }
 
-    private static func place(_ items: [MediaItem], store: EditorStore) {
+    /// Adds `items` at the playhead as one undo step, visual and audio media each chaining one
+    /// after another, and selects them.
+    static func place(_ items: [MediaItem], store: EditorStore) {
         var visualTime = store.playhead, audioTime = store.playhead
+        var added: [UUID] = []
+        let key = "preview-drop-\(UUID())"
         for item in items {
             let isAudio = item.kind == .audio
-            guard let id = store.addClip(mediaID: item.id, at: isAudio ? audioTime : visualTime),
+            guard let id = store.addClip(mediaID: item.id, at: isAudio ? audioTime : visualTime, coalesce: key),
                   let clip = store.clip(id) else { continue }
+            added.append(id)
             if isAudio { audioTime = clip.end } else { visualTime = clip.end }
         }
+        store.endCoalescing()
+        if added.count > 1 { store.selection = Set(added) }
     }
 }
 
@@ -133,7 +140,8 @@ private enum PreviewDropLoader {
     }
 }
 
-/// Friendly drop target shown while the timeline is empty.
+/// Friendly drop target shown while the timeline is empty. Imported media lands on the timeline,
+/// just like a drop.
 private struct PreviewEmptyState: View {
     @Environment(EditorStore.self) private var store
     let isTargeted: Bool
@@ -159,7 +167,9 @@ private struct PreviewEmptyState: View {
                         .multilineTextAlignment(.center)
                 }
                 Button {
-                    Task { @MainActor in await ImportActions.presentImportPanel(store: store) }
+                    Task { @MainActor in
+                        PreviewStage.place(await ImportActions.presentImportPanel(store: store), store: store)
+                    }
                 } label: {
                     Label("Import Media…", systemImage: "plus")
                         .font(.system(size: 13, weight: .semibold))
