@@ -8,6 +8,10 @@ import Observation
 ///   swaps it into the player while preserving the current time and play state. Property-only
 ///   edits are cheap (reuse the AVPlayerItem; swap videoComposition/audioMix; re-seek when
 ///   paused so the visible frame refreshes).
+/// * Structural edits that stream in (dragging or trimming a clip) are installed only once the
+///   edits pause for `structuralSettleDelay`: a new player item shows no picture until its first
+///   frame decodes, so installing one per mouse event would leave the preview black for the
+///   whole gesture. Until then the current item keeps showing its last frame.
 /// * While playing, updates `store.playhead` ~30×/s; stops at the end of the timeline.
 /// * `seek(to:)` is the only way UI should move the playhead; scrubbing coalesces seeks
 ///   (chase-time pattern) so dragging the playhead stays smooth.
@@ -24,12 +28,17 @@ public final class PlaybackController {
 
     /// Preview render size cap (long side); larger canvases render scaled down.
     public static let maxPreviewDimension = 1920.0
+    /// Quiet time after a burst of edits before a structural rebuild replaces the player item.
+    public static let structuralSettleDelay: Duration = .milliseconds(120)
 
     @ObservationIgnored private let assets: AssetCache
     @ObservationIgnored private var built: BuiltComposition?
     @ObservationIgnored private var buildTask: Task<Void, Never>?
     @ObservationIgnored private var needsBuild = false
     @ObservationIgnored private var forceFullBuild = false
+    @ObservationIgnored private var lastChange = ContinuousClock.now.advanced(by: .seconds(-3600))
+    /// True while edits arrive less than `structuralSettleDelay` apart (a live drag / trim).
+    @ObservationIgnored private var editsStreaming = false
     @ObservationIgnored private var subscriptions = Set<AnyCancellable>()
     @ObservationIgnored private var itemSubscriptions = Set<AnyCancellable>()
     @ObservationIgnored private var timeObserver: Any?
@@ -58,7 +67,7 @@ public final class PlaybackController {
         player.automaticallyWaitsToMinimizeStalling = false
         store.changes
             .sink { [weak self] _ in
-                MainActor.assumeIsolated { self?.scheduleBuild() }
+                MainActor.assumeIsolated { self?.projectChanged() }
             }
             .store(in: &subscriptions)
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
@@ -116,6 +125,27 @@ public final class PlaybackController {
 
     // MARK: - Building
 
+    private func projectChanged() {
+        let now = ContinuousClock.now
+        editsStreaming = lastChange.duration(to: now) < Self.structuralSettleDelay
+        lastChange = now
+        scheduleBuild()
+    }
+
+    /// True while a burst of edits is still arriving.
+    private var isStreamingEdits: Bool {
+        editsStreaming && lastChange.duration(to: .now) < Self.structuralSettleDelay
+    }
+
+    /// Sleeps until no edit has arrived for `structuralSettleDelay`.
+    private func waitForEditsToSettle() async {
+        while true {
+            let remaining = Self.structuralSettleDelay - lastChange.duration(to: .now)
+            guard remaining > .zero else { return }
+            try? await Task.sleep(for: remaining)
+        }
+    }
+
     private func scheduleBuild(full: Bool = false) {
         needsBuild = true
         if full { forceFullBuild = true }
@@ -137,6 +167,13 @@ public final class PlaybackController {
                 let result = try await CompositionBuilder.build(project: project, assets: assets,
                                                                 renderScale: Self.previewScale(for: project.canvas),
                                                                 reusing: previous)
+                let replacesItem = player.currentItem != nil && !(previous.map(result.sharesComposition) ?? false)
+                if replacesItem {
+                    // Keep the current item on screen while edits stream in; never install a
+                    // structure that a newer edit has already replaced.
+                    if isStreamingEdits { await waitForEditsToSettle() }
+                    if needsBuild { continue }
+                }
                 install(result)
             } catch {
                 lastError = error.localizedDescription

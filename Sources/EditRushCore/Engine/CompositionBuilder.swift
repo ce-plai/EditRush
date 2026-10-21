@@ -49,19 +49,18 @@ public enum CompositionBuilder {
     /// video composition and audio mix are rebuilt.
     public static func build(project: Project, assets: AssetCache, renderScale: Double,
                              reusing previous: BuiltComposition?) async throws -> BuiltComposition {
-        let (loaded, missing) = await loadMedia(for: project, assets: assets)
-        let plan = makePlan(project: project, loaded: loaded, missing: missing)
+        let media = await loadMedia(for: project, assets: assets, renderScale: renderScale)
+        let plan = makePlan(project: project, media: media)
         let composition: AVComposition
         if let previous, previous.plan == plan {
             composition = previous.composition
         } else {
-            composition = try await makeComposition(plan: plan, loaded: loaded)
+            composition = try await makeComposition(plan: plan, loaded: media.loaded)
         }
-        let videoComposition = makeVideoComposition(project: project, plan: plan, loaded: loaded,
-                                                    assets: assets, renderScale: renderScale)
+        let videoComposition = makeVideoComposition(project: project, plan: plan, media: media, renderScale: renderScale)
         let audioMix = makeAudioMix(project: project, plan: plan)
         return BuiltComposition(composition: composition, videoComposition: videoComposition, audioMix: audioMix,
-                                duration: Double(plan.total) / Double(timescale), missingMedia: missing,
+                                duration: Double(plan.total) / Double(timescale), missingMedia: media.missing,
                                 renderScale: renderScale, plan: plan)
     }
 
@@ -88,46 +87,78 @@ public enum CompositionBuilder {
 
     // MARK: - Media
 
-    private static func loadMedia(for project: Project, assets: AssetCache) async -> ([UUID: LoadedAsset], [String]) {
+    private struct LoadedMedia {
+        /// The project's media by id.
+        var items: [UUID: MediaItem] = [:]
+        var loaded: [UUID: LoadedAsset] = [:]
+        /// Decoded stills for image clips on visible video tracks.
+        var stills: [UUID: CIImage] = [:]
+        /// Names of media that could not be loaded or decoded, sorted.
+        var missing: [String] = []
+    }
+
+    /// Loads every AV asset the timeline uses and decodes its visible stills at the size they
+    /// are displayed at, all concurrently.
+    private static func loadMedia(for project: Project, assets: AssetCache, renderScale: Double) async -> LoadedMedia {
+        let canvas = project.canvas.size
+        var result = LoadedMedia()
+        result.items = Dictionary(project.media.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var needed: [UUID: MediaItem] = [:]
+        var stillRequests: [AssetCache.StillRequest] = []
+        var hiddenStills: [UUID: MediaItem] = [:]
         for track in project.tracks {
             for clip in track.clips {
-                guard let media = project.media(clip.mediaID), media.kind != .image else { continue }
-                needed[media.id] = media
+                guard let media = clip.mediaID.flatMap({ result.items[$0] }) else { continue }
+                guard media.kind == .image else { needed[media.id] = media; continue }
+                guard track.kind == .video, clip.text == nil else { continue }
+                guard !track.isHidden else { hiddenStills[media.id] = media; continue }
+                let base = ClipGeometry.baseSize(content: media.pixelSize, canvas: canvas, fit: clip.transform.fitMode)
+                let longSide = max(base.width, base.height) * max(0, clip.transform.scale) * max(0, renderScale)
+                stillRequests.append(.init(media: media, displayLongSide: Double(longSide)))
             }
         }
-        var loaded: [UUID: LoadedAsset] = [:]
-        var missing: [String] = []
         var pending: [MediaItem] = []
         for media in needed.values {
-            if let done = assets.cachedLoaded(for: media) { loaded[media.id] = done } else { pending.append(media) }
+            if let done = assets.cachedLoaded(for: media) { result.loaded[media.id] = done } else { pending.append(media) }
         }
+        let requests = stillRequests
+        async let stills = assets.images(for: requests)
         if !pending.isEmpty {
             await withTaskGroup(of: (MediaItem, LoadedAsset?).self) { group in
                 for media in pending {
                     group.addTask { (media, try? await assets.loaded(for: media)) }
                 }
-                for await (media, result) in group {
-                    if let result { loaded[media.id] = result } else { missing.append(media.name) }
+                for await (media, loaded) in group {
+                    if let loaded { result.loaded[media.id] = loaded } else { result.missing.append(media.name) }
                 }
             }
         }
-        return (loaded, missing.sorted())
+        result.stills = await stills
+        var missingStills = Set<UUID>()
+        for r in requests where result.stills[r.media.id] == nil && missingStills.insert(r.media.id).inserted {
+            result.missing.append(r.media.name)
+        }
+        for media in hiddenStills.values where result.stills[media.id] == nil && !missingStills.contains(media.id) {
+            if !FileManager.default.fileExists(atPath: media.url.path) { result.missing.append(media.name) }
+        }
+        result.missing.sort()
+        return result
     }
 
     // MARK: - Plan
 
-    private static func makePlan(project: Project, loaded: [UUID: LoadedAsset], missing: [String]) -> CompositionPlan {
+    private static func makePlan(project: Project, media items: LoadedMedia) -> CompositionPlan {
+        let loaded = items.loaded
         let frameTicks = max(1, ticks(project.canvas.frameDuration))
-        var plan = CompositionPlan(total: max(frameTicks, ticks(project.duration)), tracks: [], missing: missing,
+        var plan = CompositionPlan(total: max(frameTicks, ticks(project.duration)), tracks: [], missing: items.missing,
                                    canvas: project.canvas)
         var nextID = baseTrackID + 1
 
         for track in project.tracks where track.kind == .video && !track.isHidden {
             let segments = track.clips.compactMap { clip -> CompositionPlan.Segment? in
-                guard let media = project.media(clip.mediaID), media.kind == .video,
+                guard let media = clip.mediaID.flatMap({ items.items[$0] }), media.kind == .video,
                       let asset = loaded[media.id], asset.videoTrack != nil else { return nil }
-                return segment(for: clip, media: media, available: asset.videoTimeRange)
+                return segment(for: clip, media: media, available: asset.videoTimeRange, holdLastFrame: true)
             }
             guard !segments.isEmpty else { continue }
             plan.tracks.append(.init(id: nextID, timelineTrack: track.id, isVideo: true, isBoost: false, segments: segments))
@@ -136,15 +167,16 @@ public enum CompositionBuilder {
 
         for track in project.tracks where !track.isMuted {
             let segments = track.clips.compactMap { clip -> CompositionPlan.Segment? in
-                guard let media = project.media(clip.mediaID), media.kind != .image,
+                guard !clip.audioMuted, let media = clip.mediaID.flatMap({ items.items[$0] }), media.kind != .image,
                       let asset = loaded[media.id], asset.audioTrack != nil else { return nil }
-                if track.kind == .video && (clip.audioMuted || media.kind != .video) { return nil }
-                return segment(for: clip, media: media, available: asset.audioTimeRange)
+                if track.kind == .video && media.kind != .video { return nil }
+                return segment(for: clip, media: media, available: asset.audioTimeRange, holdLastFrame: false)
             }
             guard !segments.isEmpty else { continue }
             plan.tracks.append(.init(id: nextID, timelineTrack: track.id, isVideo: false, isBoost: false, segments: segments))
             nextID += 1
-            let boosted = segments.filter { s in (track.clips.first { $0.id == s.clipID }?.volume ?? 1) > 1.001 }
+            let boostedClips = Set(track.clips.lazy.filter { $0.volume > 1.001 }.map(\.id))
+            let boosted = boostedClips.isEmpty ? [] : segments.filter { boostedClips.contains($0.clipID) }
             if !boosted.isEmpty {
                 plan.tracks.append(.init(id: nextID, timelineTrack: track.id, isVideo: false, isBoost: true, segments: boosted))
                 nextID += 1
@@ -153,8 +185,10 @@ public enum CompositionBuilder {
         return plan
     }
 
-    /// The clip's source range clamped to what the media actually provides.
-    private static func segment(for clip: Clip, media: MediaItem, available: CMTimeRange) -> CompositionPlan.Segment? {
+    /// The clip's source range clamped to what the media actually provides. With `holdLastFrame`,
+    /// a clip that runs past the end of the source keeps showing its last frame until the clip ends.
+    private static func segment(for clip: Clip, media: MediaItem, available: CMTimeRange,
+                                holdLastFrame: Bool) -> CompositionPlan.Segment? {
         var at = ticks(clip.start)
         let end = ticks(clip.end)
         var source = ticks(clip.sourceIn)
@@ -166,7 +200,8 @@ public enum CompositionBuilder {
         }
         let length = min(end - at, availableEnd - source)
         guard length > 0 else { return nil }
-        return .init(clipID: clip.id, mediaID: media.id, url: media.url, source: source, at: at, length: length)
+        let hold = holdLastFrame ? max(0, end - at - length) : 0
+        return .init(clipID: clip.id, mediaID: media.id, url: media.url, source: source, at: at, length: length, hold: hold)
     }
 
     // MARK: - Composition
@@ -196,6 +231,15 @@ public enum CompositionBuilder {
                       let sourceTrack = trackPlan.isVideo ? asset.videoTrack : asset.audioTrack else { continue }
                 try track.insertTimeRange(CMTimeRange(start: time(s.source), duration: time(s.length)),
                                           of: sourceTrack, at: time(s.at))
+                if s.hold > 0 {
+                    // Stretch the last source frame over the rest of the clip.
+                    let sourceEnd = time(s.source + s.length)
+                    let frameStart = CMTimeMaximum(time(s.source), CMTimeSubtract(sourceEnd, asset.videoFrameDuration))
+                    let frame = CMTimeRange(start: frameStart, end: sourceEnd)
+                    let holdAt = time(s.at + s.length)
+                    try track.insertTimeRange(frame, of: sourceTrack, at: holdAt)
+                    track.scaleTimeRange(CMTimeRange(start: holdAt, duration: frame.duration), toDuration: time(s.hold))
+                }
             }
         }
         // Players get an immutable snapshot.
@@ -204,36 +248,41 @@ public enum CompositionBuilder {
 
     // MARK: - Video composition
 
-    private static func makeVideoComposition(project: Project, plan: CompositionPlan, loaded: [UUID: LoadedAsset],
-                                             assets: AssetCache, renderScale: Double) -> AVVideoComposition {
+    private static func makeVideoComposition(project: Project, plan: CompositionPlan, media items: LoadedMedia,
+                                             renderScale: Double) -> AVVideoComposition {
         let canvas = project.canvas
         let canvasSize = canvas.size
+        let visibleVideo = project.tracks.filter { $0.kind == .video && !$0.isHidden }
+        TextRenderer.reserveCapacity(visibleVideo.reduce(0) { n, t in n + t.clips.lazy.filter(\.isText).count })
 
         struct TimedLayer { let start: Int64; let end: Int64; let layer: CompositorLayer; let trackID: CMPersistentTrackID? }
         var timed: [TimedLayer] = []
-        for track in project.tracks where track.kind == .video && !track.isHidden {
+        for track in visibleVideo {
             let compTrack = plan.tracks.first { $0.isVideo && $0.timelineTrack == track.id }
+            let placedClips = Set(compTrack?.segments.map(\.clipID) ?? [])
             for clip in track.clips {
                 let start = ticks(clip.start), end = min(ticks(clip.end), plan.total)
                 guard end > start else { continue }
                 if let style = clip.text {
-                    guard let cg = TextRenderer.image(for: style, canvas: canvasSize) else { continue }
+                    // Rasterize at the size the title is shown at, so scaled-up titles and exports
+                    // above canvas size stay sharp; geometry stays in canvas pixels.
+                    let displayScale = renderScale * max(0, clip.transform.scale)
+                    guard let cg = TextRenderer.image(for: style, canvas: canvasSize, scale: displayScale) else { continue }
                     let layer = CompositorLayer(content: .image(CIImage(cgImage: cg)),
                                                 contentSize: TextRenderer.size(for: style, canvas: canvasSize),
                                                 isText: true, clip: clip)
                     timed.append(TimedLayer(start: start, end: end, layer: layer, trackID: nil))
                     continue
                 }
-                guard let media = project.media(clip.mediaID) else { continue }
+                guard let media = clip.mediaID.flatMap({ items.items[$0] }) else { continue }
                 switch media.kind {
                 case .image:
-                    guard let image = assets.image(for: media) else { continue }
+                    guard let image = items.stills[media.id] else { continue }
                     let size = media.pixelWidth > 0 && media.pixelHeight > 0 ? media.pixelSize : image.extent.size
                     let layer = CompositorLayer(content: .image(image), contentSize: size, isText: false, clip: clip)
                     timed.append(TimedLayer(start: start, end: end, layer: layer, trackID: nil))
                 case .video:
-                    guard let compTrack, compTrack.segments.contains(where: { $0.clipID == clip.id }),
-                          let asset = loaded[media.id] else { continue }
+                    guard let compTrack, placedClips.contains(clip.id), let asset = items.loaded[media.id] else { continue }
                     let size = media.pixelWidth > 0 && media.pixelHeight > 0 ? media.pixelSize : asset.displaySize
                     let layer = CompositorLayer(content: .video(trackID: compTrack.id, orientation: asset.orientationTransform),
                                                 contentSize: size, isText: false, clip: clip)
@@ -253,12 +302,24 @@ public enum CompositionBuilder {
         let background = CIColor(red: canvas.backgroundColor.r, green: canvas.backgroundColor.g,
                                  blue: canvas.backgroundColor.b, alpha: canvas.backgroundColor.a,
                                  colorSpace: FrameCompositor.colorSpace) ?? .black
+        // Sweep the cuts with an active set (indices into `timed`, kept in bottom → top order).
+        // Every layer end is a cut, so a layer is active over [a, b) iff start <= a < end.
+        let byStart = timed.indices.sorted { timed[$0].start < timed[$1].start }
+        var nextStart = 0
+        var active: [Int] = []
         var instructions: [CompositorInstruction] = []
+        instructions.reserveCapacity(cuts.count)
         for (a, b) in zip(cuts, cuts.dropFirst()) where b > a {
-            let active = timed.filter { $0.start <= a && $0.end >= b }
+            active.removeAll { timed[$0].end <= a }
+            while nextStart < byStart.count, timed[byStart[nextStart]].start <= a {
+                let i = byStart[nextStart]
+                nextStart += 1
+                guard timed[i].end > a else { continue }
+                active.insert(i, at: active.firstIndex { $0 > i } ?? active.count)
+            }
             var trackIDs: [CMPersistentTrackID] = []
-            for case let id? in active.map(\.trackID) where !trackIDs.contains(id) { trackIDs.append(id) }
-            let snapshot = RenderSnapshot(canvasSize: canvasSize, background: background, layers: active.map(\.layer))
+            for i in active { if let id = timed[i].trackID, !trackIDs.contains(id) { trackIDs.append(id) } }
+            let snapshot = RenderSnapshot(canvasSize: canvasSize, background: background, layers: active.map { timed[$0].layer })
             instructions.append(CompositorInstruction(timeRange: CMTimeRange(start: time(a), end: time(b)),
                                                       snapshot: snapshot, requiredTrackIDs: trackIDs))
         }
@@ -280,11 +341,19 @@ public enum CompositionBuilder {
         var clips: [UUID: Clip] = [:]
         for track in project.tracks { for clip in track.clips { clips[clip.id] = clip } }
 
+        struct Ramp { let from: Float; let to: Float; let start: Int64; let end: Int64 }
         var inputs: [AVMutableAudioMixInputParameters] = []
+        var ramps: [Ramp] = []
         for trackPlan in plan.tracks where !trackPlan.isVideo {
-            let params = AVMutableAudioMixInputParameters()
-            params.trackID = trackPlan.id
-            params.setVolume(0, at: .zero)
+            ramps.removeAll(keepingCapacity: true)
+            var cursor = Int64.min
+            // Appends a ramp, clipped so ramps never overlap (AVFoundation throws on overlap).
+            func add(_ from: Float, _ to: Float, _ start: Int64, _ end: Int64) {
+                let start = max(start, cursor)
+                guard end > start else { return }
+                ramps.append(Ramp(from: from, to: to, start: start, end: end))
+                cursor = end
+            }
             for s in trackPlan.segments {
                 guard let clip = clips[s.clipID] else { continue }
                 let volume = max(0, min(2, clip.volume))
@@ -294,16 +363,20 @@ public enum CompositionBuilder {
                 guard length > 0 else { continue }
                 let fadeIn = max(0, min(ticks(clip.fadeIn), length))
                 let fadeOut = max(0, min(ticks(clip.fadeOut), length - fadeIn))
-                if fadeIn > 0 {
-                    params.setVolumeRamp(fromStartVolume: 0, toEndVolume: gain,
-                                         timeRange: CMTimeRange(start: time(start), duration: time(fadeIn)))
-                } else {
-                    params.setVolume(gain, at: time(start))
-                }
-                if fadeOut > 0 {
-                    params.setVolumeRamp(fromStartVolume: gain, toEndVolume: 0,
-                                         timeRange: CMTimeRange(start: time(end - fadeOut), duration: time(fadeOut)))
-                }
+                // A ramp's end volume holds until the next ramp, and constant stretches are flat
+                // ramps: AVFoundation inserts point volumes in quadratic time.
+                if fadeIn > 0 { add(0, gain, start, start + fadeIn) }
+                add(gain, gain, start + fadeIn, end - fadeOut)
+                if fadeOut > 0 { add(gain, 0, end - fadeOut, end) }
+            }
+            let params = AVMutableAudioMixInputParameters()
+            params.trackID = trackPlan.id
+            if ramps.first.map({ $0.start > 0 }) ?? true { params.setVolume(0, at: .zero) }
+            // Latest first: AVFoundation inserts each ramp with a scan from the front of its list,
+            // so chronological insertion would be quadratic in the clip count.
+            for r in ramps.reversed() {
+                params.setVolumeRamp(fromStartVolume: r.from, toEndVolume: r.to,
+                                     timeRange: CMTimeRange(start: time(r.start), end: time(r.end)))
             }
             inputs.append(params)
         }
@@ -323,6 +396,8 @@ struct CompositionPlan: Hashable {
         let source: Int64
         let at: Int64
         let length: Int64
+        /// Video only: ticks after `at + length` the last source frame is held for.
+        let hold: Int64
     }
     struct TrackPlan: Hashable {
         let id: CMPersistentTrackID

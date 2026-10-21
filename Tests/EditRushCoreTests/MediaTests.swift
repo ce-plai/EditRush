@@ -112,6 +112,16 @@ final class MediaTests: XCTestCase {
         print("Imported \(items.count) fixtures in \(elapsed)")
     }
 
+    func testVideoDurationIsBoundedByPicture() async throws {
+        let url = try await TestMedia.videoWithLongerAudio(in: tempDir, video: 2, audio: 3)
+        let assetDuration = try await AVURLAsset(url: url).load(.duration).seconds
+        XCTAssertGreaterThan(assetDuration, 2.9, "the file's audio outlasts its picture")
+        let item = try await MediaImporter.probe(url)
+        XCTAssertEqual(item.kind, .video)
+        XCTAssertTrue(item.hasAudio)
+        XCTAssertEqual(item.duration, 2, accuracy: 0.05, "audio past the last frame must not lengthen the clip")
+    }
+
     // MARK: - Waveforms
 
     @MainActor
@@ -302,3 +312,23 @@ final class MediaTests: XCTestCase {
 }
 
 private struct MediaTestTimeout: Error {}
+
+/// Media generated at test time.
+enum TestMedia {
+    /// A movie (passthrough from `clip_a.mp4`) whose audio track runs longer than its video track.
+    static func videoWithLongerAudio(in folder: URL, video: Double, audio: Double) async throws -> URL {
+        let source = AVURLAsset(url: try Fixture.url("clip_a.mp4"))
+        let videoTracks = try await source.loadTracks(withMediaType: .video)
+        let audioTracks = try await source.loadTracks(withMediaType: .audio)
+        let v = try XCTUnwrap(videoTracks.first), a = try XCTUnwrap(audioTracks.first)
+        let comp = AVMutableComposition()
+        let cv = try XCTUnwrap(comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid))
+        let ca = try XCTUnwrap(comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid))
+        try cv.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: video, preferredTimescale: 600)), of: v, at: .zero)
+        try ca.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: audio, preferredTimescale: 600)), of: a, at: .zero)
+        let url = folder.appendingPathComponent("longaudio-\(UUID().uuidString).mov")
+        let session = try XCTUnwrap(AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetPassthrough))
+        try await session.export(to: url, as: .mov)
+        return url
+    }
+}

@@ -60,6 +60,8 @@ public final class Exporter {
 
     public var isExporting: Bool { state == .exporting }
 
+    /// Exports to a temporary file beside `url`, which replaces `url` only once the export
+    /// succeeds; on failure or cancellation an existing file at `url` is left untouched.
     public func export(project: Project, to url: URL, settings: ExportSettings) async {
         guard state != .exporting else { return }
         state = .exporting
@@ -73,7 +75,6 @@ public final class Exporter {
             progress = 1
             state = .finished(url)
         } catch {
-            try? FileManager.default.removeItem(at: url)
             if task.isCancelled || error is CancellationError {
                 state = .cancelled
             } else {
@@ -109,9 +110,13 @@ public final class Exporter {
         session.audioMix = built.audioMix
         session.shouldOptimizeForNetworkUse = settings.container == .mp4
 
+        // Write next to the destination and swap it in only on success, so a failed, cancelled or
+        // interrupted export never destroys an existing file there.
         let fm = FileManager.default
-        if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
-        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let folder = url.deletingLastPathComponent()
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let temp = Self.temporaryURL(for: url)
+        defer { try? fm.removeItem(at: temp) }
 
         let monitor = Task { @MainActor [weak self] in
             for await state in session.states(updateInterval: 0.1) {
@@ -119,7 +124,19 @@ public final class Exporter {
             }
         }
         defer { monitor.cancel() }
-        try await session.export(to: url, as: settings.fileType)
+        try await session.export(to: temp, as: settings.fileType)
+        try Task.checkCancellation()
+        if fm.fileExists(atPath: url.path) {
+            _ = try fm.replaceItemAt(url, withItemAt: temp)
+        } else {
+            try fm.moveItem(at: temp, to: url)
+        }
+    }
+
+    /// Hidden file in the destination's folder (same volume, so the final swap is atomic).
+    static func temporaryURL(for url: URL) -> URL {
+        let name = ".\(url.deletingPathExtension().lastPathComponent).exporting-\(UUID().uuidString)"
+        return url.deletingLastPathComponent().appendingPathComponent(name).appendingPathExtension(url.pathExtension)
     }
 }
 
