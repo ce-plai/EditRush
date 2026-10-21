@@ -25,7 +25,9 @@ struct TimelineToolbar: View {
                 store.closeGaps()
             } label: { Image(systemName: "arrow.right.and.line.vertical.and.arrow.left") }
             TimelineToolButton(help: "Detach Audio", disabled: detachableClips.isEmpty) {
-                for clip in detachableClips { store.detachAudio(clip.id) }
+                let key = "detach-\(UUID())"
+                for clip in detachableClips { store.detachAudio(clip.id, coalesce: key) }
+                store.endCoalescing()
             } label: { Image(systemName: "waveform.badge.minus") }
             ToolbarDivider()
             TimelineToolButton(help: "Add Title (⌘T)") {

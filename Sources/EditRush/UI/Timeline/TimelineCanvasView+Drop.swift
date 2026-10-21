@@ -141,28 +141,30 @@ extension TimelineCanvasView {
             return TimelineDropPreview(start: start, segments: entries.map(\.segment), trackKind: trackKind,
                                        trackID: track.id, isExplicitTrack: true)
         }
-        // Predict the store's choice: the lowest compatible unlocked track that is free there.
-        let end = start + first.segment.duration
+        // Predict the store's choice: the lowest compatible visible, unlocked track that is free there.
+        let duration = first.segment.duration
         let predicted = store.project.tracks.first { track in
-            track.kind == trackKind && !track.isLocked && !track.clips.contains { $0.start < end && $0.end > start }
+            track.kind == trackKind && track.allowsAutomaticPlacement && track.isFree(start: start, duration: duration)
         }
         return TimelineDropPreview(start: start, segments: entries.map(\.segment), trackKind: trackKind,
                                    trackID: predicted?.id, isExplicitTrack: false)
     }
 
-    /// Adds `items` one after another starting at the preview position and selects them.
+    /// Adds `items` one after another starting at the preview position (one undo step) and selects them.
     private func place(_ items: [MediaItem], preview: TimelineDropPreview) {
         var t = preview.start
         var added: [UUID] = []
+        let key = "drop-\(UUID())"
         for item in items {
             let explicit = preview.isExplicitTrack ? preview.trackID.flatMap { id in
                 track(id)?.accepts(item.kind) == true ? id : nil
             } : nil
-            let id = store.addClip(mediaID: item.id, trackID: explicit, at: t)
+            let id = store.addClip(mediaID: item.id, trackID: explicit, at: t, coalesce: key)
             if let id { added.append(id) }
             let fallback = item.kind == .image ? Self.defaultDropDuration : item.duration
             t = id.flatMap { store.clip($0)?.end } ?? (t + fallback)
         }
+        store.endCoalescing()
         if added.count > 1 { store.selection = Set(added) }
     }
 }

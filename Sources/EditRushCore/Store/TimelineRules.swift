@@ -30,6 +30,10 @@ extension Track {
         consider(gapStart, .infinity)
         return best ?? gapStart
     }
+
+    /// True when automatic placement (no explicit target track) may put new clips here:
+    /// the track is unlocked and visible.
+    public var allowsAutomaticPlacement: Bool { !isLocked && !isHidden }
 }
 
 // MARK: - Store-internal editing rules
@@ -144,8 +148,9 @@ enum StoreTimeline {
 
     /// Picks the track for a new clip of `kind` occupying `[clip.start, clip.end)`:
     /// the preferred track when it is compatible and unlocked (the clip moves to its nearest free
-    /// start there), else the first unlocked compatible track that is free (bottom-up, or top-down
-    /// with `topmostFirst`), else a new track. Inserts the clip and returns the track index.
+    /// start there, even when the track is hidden), else the first visible, unlocked compatible
+    /// track that is free (bottom-up, or top-down with `topmostFirst`), else a new track.
+    /// Inserts the clip and returns the track index.
     @discardableResult
     static func place(_ clip: inout Clip, kind: TrackKind, preferredTrack: UUID?, topmostFirst: Bool,
                       in p: inout Project) -> Int {
@@ -155,7 +160,7 @@ enum StoreTimeline {
             clip.start = p.canvas.quantize(p.tracks[pi].nearestFreeStart(duration: clip.duration, near: clip.start))
             ti = pi
         } else {
-            var candidates = p.tracks.indices.filter { p.tracks[$0].kind == kind && !p.tracks[$0].isLocked }
+            var candidates = p.tracks.indices.filter { p.tracks[$0].kind == kind && p.tracks[$0].allowsAutomaticPlacement }
             if topmostFirst { candidates.reverse() }
             let start = clip.start, duration = clip.duration
             ti = candidates.first { p.tracks[$0].isFree(start: start, duration: duration) } ?? insertTrack(kind, in: &p)
@@ -163,6 +168,62 @@ enum StoreTimeline {
         p.tracks[ti].clips.append(clip)
         sortClips(&p, track: ti)
         return ti
+    }
+
+    /// A closed range of time shifts.
+    struct Shift { var lo: Seconds; var hi: Seconds }
+
+    /// Sorted, disjoint ranges of shifts `d` for which every clip of `group`, moved to
+    /// `[start + d, end + d)` on its track, stays at or after 0 and overlaps no clip outside
+    /// `excluding`. Shifts never make group clips collide with each other (they all move together).
+    static func validShifts(_ group: [(track: Int, clip: Clip)], excluding: Set<UUID>, in p: Project) -> [Shift] {
+        var gapsByTrack: [Int: [Shift]] = [:]
+        var result = [Shift(lo: -.infinity, hi: .infinity)]
+        for (ti, c) in group {
+            let gaps: [Shift]
+            if let cached = gapsByTrack[ti] {
+                gaps = cached
+            } else {
+                var g: [Shift] = []
+                var gapStart: Seconds = 0
+                for o in p.tracks[ti].clips where !excluding.contains(o.id) {
+                    if o.start > gapStart { g.append(Shift(lo: gapStart, hi: o.start)) }
+                    gapStart = max(gapStart, o.end)
+                }
+                g.append(Shift(lo: gapStart, hi: .infinity))
+                gapsByTrack[ti] = g
+                gaps = g
+            }
+            let fits = gaps.compactMap { g -> Shift? in
+                let lo = g.lo - c.start, hi = g.hi - c.end
+                return hi >= lo - epsilon ? Shift(lo: lo, hi: max(lo, hi)) : nil
+            }
+            result = intersect(result, fits)
+            if result.isEmpty { break }
+        }
+        return result
+    }
+
+    /// Intersection of two sorted, disjoint shift range lists.
+    static func intersect(_ a: [Shift], _ b: [Shift]) -> [Shift] {
+        var r: [Shift] = []
+        var i = 0, j = 0
+        while i < a.count, j < b.count {
+            let lo = max(a[i].lo, b[j].lo), hi = min(a[i].hi, b[j].hi)
+            if hi >= lo - epsilon { r.append(Shift(lo: lo, hi: max(lo, hi))) }
+            if a[i].hi < b[j].hi { i += 1 } else { j += 1 }
+        }
+        return r
+    }
+
+    /// The value in `ranges` closest to `d` (ties prefer the smaller value), or nil when empty.
+    static func nearest(_ d: Seconds, in ranges: [Shift]) -> Seconds? {
+        var best: Seconds?
+        for r in ranges {
+            let candidate = min(max(d, r.lo), r.hi)
+            if best.map({ abs(candidate - d) < abs($0 - d) - epsilon }) ?? true { best = candidate }
+        }
+        return best
     }
 
     /// True when `t` is at least one frame inside the clip on both sides.
