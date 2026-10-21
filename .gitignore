@@ -5,3 +5,5 @@ Fixtures/
 *.xcodeproj/
 xcuserdata/
 .DS_Store
+.claude/
+.vscode/
