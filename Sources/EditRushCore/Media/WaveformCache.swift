@@ -9,6 +9,7 @@ import Observation
 /// persisted to `Caches/EditRush/Waveforms`, so reopening a project shows waveforms instantly.
 /// Values are NOT normalised per file (quiet recordings look quiet); each value is
 /// `sqrt(absolute sample peak)`, a mild curve that keeps quiet passages visible.
+/// Media whose analysis fails (e.g. a missing file) is not retried until `retryFailures(for:)`.
 @MainActor
 @Observable
 public final class WaveformCache {
@@ -23,6 +24,7 @@ public final class WaveformCache {
     @ObservationIgnored public let diskCacheDirectory: URL?
     @ObservationIgnored private var peaksByURL: [URL: [Float]] = [:]
     @ObservationIgnored private var requested: Set<URL> = []
+    @ObservationIgnored private var failed: Set<URL> = []
     @ObservationIgnored private var queue: [MediaItem] = []
     @ObservationIgnored private var runningJobs = 0
     @ObservationIgnored private lazy var changeThrottle = MediaChangeThrottle { [weak self] in self?.version += 1 }
@@ -49,6 +51,20 @@ public final class WaveformCache {
         return nil
     }
 
+    /// Forgets failed analyses for `urls` (e.g. their files came back) so the next lookup
+    /// computes them again.
+    public func retryFailures(for urls: some Sequence<URL>) {
+        var retried = false
+        for url in urls where failed.remove(url) != nil {
+            requested.remove(url)
+            retried = true
+        }
+        if retried { changeThrottle.signal() }
+    }
+
+    /// True when analysing `url` failed and has not been retried.
+    func hasFailed(_ url: URL) -> Bool { failed.contains(url) }
+
     private func pump() {
         while runningJobs < Self.maxConcurrentJobs, !queue.isEmpty {
             let media = queue.removeFirst()
@@ -60,9 +76,13 @@ public final class WaveformCache {
                 }.value
                 guard let self else { return }
                 self.runningJobs -= 1
-                // Failed analyses store an empty envelope so they are not retried on every redraw.
-                self.peaksByURL[media.url] = peaks ?? []
-                self.changeThrottle.signal()
+                // Failures stay requested (no retry on every redraw) until retryFailures(for:).
+                if let peaks {
+                    self.peaksByURL[media.url] = peaks
+                    self.changeThrottle.signal()
+                } else {
+                    self.failed.insert(media.url)
+                }
                 self.pump()
             }
         }

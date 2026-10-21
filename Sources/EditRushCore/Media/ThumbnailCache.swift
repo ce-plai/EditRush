@@ -9,6 +9,7 @@ import Observation
 /// Decoding happens off the main actor with at most `maxConcurrentJobs` media generating at once
 /// (posters before filmstrips). `version` increments (throttled to ~10 Hz) whenever new images
 /// land; lookups read it, so SwiftUI views that call them re-render automatically.
+/// Media that fails to decode (e.g. a missing file) is not retried until `retryFailures(for:)`.
 @MainActor
 @Observable
 public final class ThumbnailCache {
@@ -44,6 +45,8 @@ public final class ThumbnailCache {
     @ObservationIgnored private var posterRequested: Set<URL> = []
     @ObservationIgnored private var filmstrips: [URL: Filmstrip] = [:]
     @ObservationIgnored private var filmstripRequested: Set<URL> = []
+    /// Media whose poster or filmstrip produced no image.
+    @ObservationIgnored private var failed: Set<URL> = []
     @ObservationIgnored private var posterQueue: [MediaItem] = []
     @ObservationIgnored private var filmstripQueue: [MediaItem] = []
     @ObservationIgnored private var runningJobs = 0
@@ -83,7 +86,22 @@ public final class ThumbnailCache {
         return poster(for: media)
     }
 
+    /// Forgets failed posters / filmstrips for `urls` (e.g. their files came back) so the next
+    /// lookup generates them again.
+    public func retryFailures(for urls: some Sequence<URL>) {
+        var retried = false
+        for url in urls where failed.remove(url) != nil {
+            posterRequested.remove(url)
+            if filmstrips[url] == nil { filmstripRequested.remove(url) }
+            retried = true
+        }
+        if retried { changeThrottle.signal() }
+    }
+
     // MARK: - Test / diagnostics hooks
+
+    /// True when generating a poster or filmstrip for `url` failed and has not been retried.
+    func hasFailed(_ url: URL) -> Bool { failed.contains(url) }
 
     /// True once every filmstrip frame for `media` has been generated (or failed).
     func isFilmstripComplete(for media: MediaItem) -> Bool { filmstrips[media.url]?.isComplete ?? false }
@@ -134,6 +152,8 @@ public final class ThumbnailCache {
             if let image {
                 posters[media.url] = image
                 changeThrottle.signal()
+            } else {
+                failed.insert(media.url)
             }
         case .filmstrip(let media):
             let times = Self.filmstripTimes(duration: media.duration)
@@ -147,6 +167,11 @@ public final class ThumbnailCache {
                     await self.receive(batch, for: url)
                 }
             }.value
+            if filmstrips[url]?.frames.allSatisfy({ $0 == nil }) ?? false {
+                filmstrips[url] = nil
+                failed.insert(url)
+                return
+            }
             filmstrips[url]?.isComplete = true
             changeThrottle.signal()
             evictFilmstripsIfNeeded(keeping: url)

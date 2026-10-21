@@ -29,6 +29,18 @@ enum ShellResponder {
     static func send(_ selector: Selector) {
         NSApp.sendAction(selector, to: nil, from: nil)
     }
+
+    /// Ends text editing in `window` (default: the main editor window) so editor shortcuts
+    /// work again; the field commits its edit as it loses focus.
+    static func endTextEditing(in window: NSWindow? = nil) {
+        guard let window = window ?? mainWindow, window.firstResponder is NSText else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    /// The editor window (the SwiftUI `Window` scene with id "main").
+    static var mainWindow: NSWindow? {
+        NSApp.windows.first { $0.identifier?.rawValue == "main" } ?? NSApp.mainWindow
+    }
 }
 
 /// Observable mirror of `ShellResponder.isTextFocused` so menu item enabled states and titles

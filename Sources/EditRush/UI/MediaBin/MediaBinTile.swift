@@ -36,7 +36,10 @@ struct MediaBinTile: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: addToTimeline)
-        .simultaneousGesture(TapGesture().onEnded { store.selectedMediaID = media.id })
+        .simultaneousGesture(TapGesture().onEnded {
+            ShellResponder.endTextEditing()
+            store.selectedMediaID = media.id
+        })
         .draggable(MediaDragPayload.string(for: media.id)) {
             MediaBinThumbnail(media: media)
                 .frame(width: 120)
@@ -75,7 +78,7 @@ struct MediaBinTile: View {
                     .background(Theme.accent, in: Circle())
             }
             .buttonStyle(.plain)
-            .help("Add to timeline at the playhead")
+            .help("Add to the timeline after the playhead")
         } else if usageCount > 0 {
             Image(systemName: "checkmark")
                 .font(.system(size: 8, weight: .heavy))
@@ -153,8 +156,9 @@ struct MediaBinTile: View {
             store.statusMessage = "“\(media.url.lastPathComponent)” is missing — right-click it to locate the file."
             return
         }
+        ShellResponder.endTextEditing()
         store.selectedMediaID = media.id
-        store.addClip(mediaID: media.id)
+        MediaBinActions.append([media], store: store, playback: AppEnvironment.shared.playback)
     }
 
     // MARK: Shared styling

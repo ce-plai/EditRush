@@ -21,6 +21,10 @@ enum ShellActions {
     static func save() { env.documents.save() }
     static func saveAs() { env.documents.saveAs() }
 
+    /// Renames the project (and its file, when it has one). Returns false if that failed.
+    @discardableResult
+    static func renameProject(_ name: String) -> Bool { env.documents.renameProject(to: name) }
+
     static func importMedia() {
         Task { await ImportActions.presentImportPanel(store: store) }
     }
@@ -81,8 +85,11 @@ enum ShellActions {
         }.map(\.id)
     }
 
+    /// Detaches audio from every detachable selected clip as one undo step.
     static func detachAudio() {
-        for id in detachableClipIDs { store.detachAudio(id) }
+        let key = "detach-\(UUID())"
+        for id in detachableClipIDs { store.detachAudio(id, coalesce: key) }
+        store.endCoalescing()
     }
 
     static func addTitle() { store.addTextClip() }

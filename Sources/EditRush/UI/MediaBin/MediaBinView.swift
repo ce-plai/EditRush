@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import EditRushCore
 
-/// Project media: import, filter, select, drag to the timeline, double-click to add at the playhead.
+/// Project media: import, filter, select, drag to the timeline, double-click to append after the playhead.
 struct MediaBinView: View {
     @Environment(EditorStore.self) private var store
     @State private var filter: MediaBinFilter = .all
@@ -92,7 +92,7 @@ struct MediaBinView: View {
             .foregroundStyle(Theme.textSecondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
-            .onTapGesture { store.selectedMediaID = nil }
+            .onTapGesture(perform: deselect)
         } else {
             let usage = usageCounts()
             ScrollView {
@@ -112,7 +112,7 @@ struct MediaBinView: View {
             .background {
                 Color.clear
                     .contentShape(Rectangle())
-                    .onTapGesture { store.selectedMediaID = nil }
+                    .onTapGesture(perform: deselect)
             }
             footer
         }
@@ -130,6 +130,11 @@ struct MediaBinView: View {
 
     // MARK: Helpers
 
+    private func deselect() {
+        ShellResponder.endTextEditing()
+        store.selectedMediaID = nil
+    }
+
     private func usageCounts() -> [UUID: Int] {
         var counts: [UUID: Int] = [:]
         for track in store.project.tracks {
@@ -140,13 +145,21 @@ struct MediaBinView: View {
         return counts
     }
 
-    /// Checks which media files are missing on disk, off the main thread.
+    /// Checks which media files are missing on disk, off the main thread. When missing files are
+    /// back (drive reconnected), the preview rebuilds and their thumbnails / waveforms load again.
     private func refreshMissing() async {
         let entries = store.project.media.map { (id: $0.id, path: $0.url.path) }
         let result = await Task.detached(priority: .utility) {
             Set(entries.filter { !FileManager.default.fileExists(atPath: $0.path) }.map(\.id))
         }.value
-        if result != missing { missing = result }
+        guard result != missing else { return }
+        let restored = missing.subtracting(result)
+        missing = result
+        let urls = store.project.media.filter { restored.contains($0.id) }.map(\.url)
+        guard !urls.isEmpty else { return }
+        ThumbnailCache.shared.retryFailures(for: urls)
+        WaveformCache.shared.retryFailures(for: urls)
+        AppEnvironment.shared.playback.rebuildNow()
     }
 
     /// Lets the user point a missing media item at its new location.

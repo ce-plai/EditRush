@@ -6,9 +6,10 @@ import EditRushCore
 ///
 ///   EditRush --snapshot out.png [--demo <media folder> | --project file.editrush]
 ///            [--size 1600x1000] [--select-first] [--playhead 2.5] [--wait 2]
-///            [--select-media <n>] [--status "message"] [--export-sheet]
+///            [--select-media <n>] [--bin-add <n,n,…>] [--status "message"] [--export-sheet]
 ///
-/// `--select-media` selects the n-th bin item (0-based), `--status` shows a toast, and
+/// `--select-media` selects the n-th bin item (0-based), `--bin-add` adds bin items to the
+/// timeline one by one as double-clicking them would, `--status` shows a toast, and
 /// `--export-sheet` renders the export sheet on its own instead of the main window.
 ///
 /// Renders `MainView` offscreen to a PNG and exits. AVPlayerLayer / Metal content is not
@@ -45,6 +46,10 @@ enum SnapshotRunner {
             if let t = value("--playhead").flatMap(Double.init) { env.playback.seek(to: t) }
             if let n = value("--select-media").flatMap(Int.init), env.store.project.media.indices.contains(n) {
                 env.store.selectedMediaID = env.store.project.media[n].id
+            }
+            for n in (value("--bin-add") ?? "").split(separator: ",").compactMap({ Int($0) })
+            where env.store.project.media.indices.contains(n) {
+                MediaBinActions.append([env.store.project.media[n]], store: env.store, playback: env.playback)
             }
             if let message = value("--status") { env.store.statusMessage = message }
 
