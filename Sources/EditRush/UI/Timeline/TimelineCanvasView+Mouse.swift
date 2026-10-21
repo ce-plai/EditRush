@@ -26,6 +26,8 @@ struct TimelineMoveDrag {
     let anchor: Item
     /// All clips being moved (includes the anchor).
     let items: [Item]
+    /// Track kind shared by every item's track (nil = mixed video and audio, which only moves in time).
+    let groupKind: TrackKind?
     let downPoint: CGPoint
     let downTime: Seconds
     let coalesceKey: String
@@ -33,7 +35,9 @@ struct TimelineMoveDrag {
     /// collapses the selection to that clip on mouse-up.
     let collapseOnClick: Bool
     var started = false
-    var applied: (delta: Seconds, trackID: UUID)?
+    /// Last requested position: time delta plus the target track (single clip) or the track
+    /// offset within the group's kind (multi-selection).
+    var applied: (delta: Seconds, trackID: UUID, trackOffset: Int)?
 }
 
 struct TimelineTrimDrag {
@@ -288,7 +292,10 @@ extension TimelineCanvasView {
         let anchor = TimelineMoveDrag.Item(id: hit.clip.id, trackID: hit.track.id, start: hit.clip.start,
                                            duration: hit.clip.duration, kind: contentKind(of: hit.clip))
         if !items.contains(where: { $0.id == anchor.id }) { items.append(anchor) }
-        return TimelineMoveDrag(anchor: anchor, items: items, downPoint: p, downTime: rawTime(atX: p.x),
+        let trackIDs = Set(items.map(\.trackID))
+        let kinds = Set(project.tracks.filter { trackIDs.contains($0.id) }.map(\.kind))
+        return TimelineMoveDrag(anchor: anchor, items: items, groupKind: kinds.count == 1 ? kinds.first : nil,
+                                downPoint: p, downTime: rawTime(atX: p.x),
                                 coalesceKey: "timeline-move-\(UUID())", collapseOnClick: collapseOnClick)
     }
 
@@ -310,23 +317,40 @@ extension TimelineCanvasView {
         }
         delta = max(delta, -minStart)
 
-        var targetTrack = m.applied?.trackID ?? m.anchor.trackID
-        if m.items.count == 1,
-           let row = row(atViewY: min(max(p.y, rulerHeight), bounds.height - 1)),
-           let track = track(row.trackID), !track.isLocked, track.accepts(m.anchor.kind) {
-            targetTrack = row.trackID
-        }
+        let pointerRow = row(atViewY: min(max(p.y, rulerHeight), bounds.height - 1))
         setSnapGuide(guide)
-        if let applied = m.applied, applied.delta == delta, applied.trackID == targetTrack { return }
-
-        // Move the leading clips first so selected clips never collide with each other.
-        let movingRight = delta >= (m.applied?.delta ?? 0)
-        let ordered = m.items.sorted { movingRight ? $0.start > $1.start : $0.start < $1.start }
-        for item in ordered {
-            let trackID = m.items.count == 1 ? targetTrack : item.trackID
-            store.moveClip(item.id, toTrack: trackID, start: item.start + delta, coalesce: m.coalesceKey)
+        guard m.items.count > 1 else {
+            var targetTrack = m.applied?.trackID ?? m.anchor.trackID
+            if let pointerRow, let track = track(pointerRow.trackID), !track.isLocked, track.accepts(m.anchor.kind) {
+                targetTrack = pointerRow.trackID
+            }
+            if let applied = m.applied, applied.delta == delta, applied.trackID == targetTrack { return }
+            store.moveClip(m.anchor.id, toTrack: targetTrack, start: m.anchor.start + delta, coalesce: m.coalesceKey)
+            m.applied = (delta, targetTrack, 0)
+            return
         }
-        m.applied = (delta, targetTrack)
+
+        // A multi-selection moves rigidly; a single-kind group also follows the pointer across tracks.
+        var offset = m.applied?.trackOffset ?? 0
+        if let kind = m.groupKind, let pointerRow, pointerRow.kind == kind,
+           let from = kindOrdinal(of: m.anchor.trackID), let to = kindOrdinal(of: pointerRow.trackID) {
+            offset = to - from
+        }
+        if let applied = m.applied, applied.delta == delta, applied.trackOffset == offset { return }
+        m.applied = (delta, m.anchor.trackID, offset)
+        guard let current = store.project.locate(clip: m.anchor.id) else { return }
+        let currentTrack = store.project.tracks[current.track]
+        let currentDelta = currentTrack.clips[current.clip].start - m.anchor.start
+        let currentOffset = (kindOrdinal(of: currentTrack.id) ?? 0) - (kindOrdinal(of: m.anchor.trackID) ?? 0)
+        store.moveClips(Set(m.items.map(\.id)), by: delta - currentDelta, trackOffset: offset - currentOffset,
+                        coalesce: m.coalesceKey)
+    }
+
+    /// Index of a track among the tracks of its kind (0 = V1 / A1).
+    private func kindOrdinal(of trackID: UUID) -> Int? {
+        let tracks = store.project.tracks
+        guard let kind = tracks.first(where: { $0.id == trackID })?.kind else { return nil }
+        return tracks.filter { $0.kind == kind }.firstIndex { $0.id == trackID }
     }
 
     // MARK: - Trim & fades
@@ -546,7 +570,9 @@ extension TimelineCanvasView {
         let detachable = selected.filter(canDetachAudio)
         if !detachable.isEmpty {
             menu.add(detachable.count > 1 ? "Detach Audio (\(detachable.count) clips)" : "Detach Audio") {
-                for clip in detachable { store.detachAudio(clip.id) }
+                let key = "detach-\(UUID())"
+                for clip in detachable { store.detachAudio(clip.id, coalesce: key) }
+                store.endCoalescing()
             }
         }
         menu.addSeparator()

@@ -976,6 +976,249 @@ final class StoreTests: XCTestCase {
         XCTAssertNil(restored.projectURL)
     }
 
+    // MARK: Group moves & duplicates
+
+    /// V1: 10 s video at 0 with its audio detached onto A1 (0–10); A1 also holds music at 14–22.
+    private func storeWithDetachedPairAndMusic() throws -> (EditorStore, video: UUID, audio: UUID, music: UUID) {
+        let (store, ids) = storeWithV1([(0, 10)])
+        store.detachAudio(ids[0])
+        let a1 = store.project.tracks[2]
+        let detached = try XCTUnwrap(a1.clips.first?.id)
+        let music = try XCTUnwrap(store.addClip(mediaID: audio.id, trackID: a1.id, at: 14))
+        XCTAssertEqual(store.clip(music)?.start, 14)
+        return (store, ids[0], detached, music)
+    }
+
+    func testMoveClipsKeepsDetachedPairInSync() throws {
+        let (store, v, a, music) = try storeWithDetachedPairAndMusic()
+        let original = store.project
+        let key = "drag-\(UUID())"
+        // Live drag in small steps towards +6: the pair stops together against the music (+4).
+        var applied: Seconds = 0
+        for target in stride(from: 0.5, through: 6, by: 0.5) {
+            store.moveClips([v, a], by: target - applied, coalesce: key)
+            applied = try XCTUnwrap(store.clip(v)).start
+            XCTAssertEqual(store.clip(a)?.start, store.clip(v)?.start, "target \(target)")
+        }
+        XCTAssertEqual(store.clip(v)!.start, 4, accuracy: 1e-9)
+        // Dragging further jumps the whole group past the music, still in sync.
+        store.moveClips([v, a], by: 20 - applied, coalesce: key)
+        XCTAssertEqual(store.clip(v)!.start, 22, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(a)!.start, 22, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(music)?.start, 14, "unselected clips never move")
+        XCTAssertEqual(store.project.locate(clip: a)?.track, 2)
+        store.endCoalescing()
+        assertInvariants(store.project)
+        XCTAssertEqual(store.undoActionName, "Move Clips")
+        store.undo()
+        XCTAssertEqual(store.project, original, "the whole drag is one undo step")
+    }
+
+    func testMoveClipsBlockedByUnselectedNeighbourAndZero() {
+        let (store, ids) = storeWithV1([(0, 5), (10, 5), (16, 4)])
+        store.moveClips([ids[0], ids[1]], by: 3)
+        XCTAssertEqual(store.clip(ids[0])!.start, 1, accuracy: 1e-9, "clamped by the unselected clip at 16")
+        XCTAssertEqual(store.clip(ids[1])!.start, 11, accuracy: 1e-9)
+        store.moveClips([ids[0], ids[1]], by: -5)
+        XCTAssertEqual(store.clip(ids[0])!.start, 0, accuracy: 1e-9, "clamped at 0")
+        XCTAssertEqual(store.clip(ids[1])!.start, 10, accuracy: 1e-9)
+        // A requested shift past the obstacle uses the nearest spot where the whole group fits
+        // (here the group straddles the unselected clip: [11, 16) · C [16, 20) · [21, 26)).
+        store.moveClips([ids[0], ids[1]], by: 12)
+        XCTAssertEqual(store.clip(ids[0])!.start, 11, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(ids[1])!.start, 21, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(ids[2])!.start, 16, accuracy: 1e-9)
+        // Shifts are whole frames.
+        store.moveClips([ids[0], ids[1]], by: -0.51 / 30)
+        XCTAssertEqual(store.clip(ids[0])!.start, 11 - 1.0 / 30, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(ids[1])!.start, 21 - 1.0 / 30, accuracy: 1e-9)
+        assertInvariants(store.project)
+    }
+
+    func testMoveClipsLeavesLockedTracksAlone() throws {
+        let (store, ids) = storeWithV1([(0, 2)])
+        let v2 = store.project.tracks[1].id
+        let other = try XCTUnwrap(store.addClip(mediaID: video.id, trackID: v2, at: 0))
+        store.setTrack(v2, locked: true)
+        store.moveClips([ids[0], other], by: 3)
+        XCTAssertEqual(store.clip(ids[0])!.start, 3, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(other)!.start, 0, "clips on locked tracks stay put")
+        // Moving onto the locked V2 is refused; the time shift still applies.
+        store.moveClips([ids[0]], by: 1, trackOffset: 1)
+        XCTAssertEqual(store.project.locate(clip: ids[0])?.track, 0)
+        XCTAssertEqual(store.clip(ids[0])!.start, 4, accuracy: 1e-9)
+        let revision = store.revision
+        store.moveClips([other], by: 5)
+        XCTAssertEqual(store.revision, revision)
+    }
+
+    func testMoveClipsTrackOffset() throws {
+        let (store, v, a, _) = try storeWithDetachedPairAndMusic()
+        // Both kinds move one track up their own order: V1 → V2, A1 → A2.
+        store.moveClips([v, a], by: 0, trackOffset: 1)
+        XCTAssertEqual(store.project.locate(clip: v)?.track, 1)
+        XCTAssertEqual(store.project.locate(clip: a)?.track, 3)
+        XCTAssertEqual(store.clip(v)?.start, 0)
+        XCTAssertEqual(store.clip(a)?.start, 0)
+        // No V3 / A3: the offset is refused as a whole, the time shift still applies.
+        store.moveClips([v, a], by: 2, trackOffset: 1)
+        XCTAssertEqual(store.project.locate(clip: v)?.track, 1)
+        XCTAssertEqual(store.project.locate(clip: a)?.track, 3)
+        XCTAssertEqual(store.clip(v)!.start, 2, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(a)!.start, 2, accuracy: 1e-9)
+        // Back down onto A1 and +3 s, where the music limits the shared shift to +2 (start 4).
+        store.moveClips([v, a], by: 3, trackOffset: -1)
+        XCTAssertEqual(store.project.locate(clip: v)?.track, 0)
+        XCTAssertEqual(store.project.locate(clip: a)?.track, 2)
+        XCTAssertEqual(store.clip(v)!.start, 4, accuracy: 1e-9)
+        XCTAssertEqual(store.clip(a)!.start, 4, accuracy: 1e-9)
+        assertInvariants(store.project)
+    }
+
+    func testDuplicateKeepsGroupTiming() throws {
+        let (store, v, a, music) = try storeWithDetachedPairAndMusic()
+        store.selection = [v, a]
+        store.duplicateSelection()
+        let copies = store.selectedClips
+        XCTAssertEqual(copies.count, 2)
+        XCTAssertFalse(store.selection.contains(v) || store.selection.contains(a) || store.selection.contains(music))
+        XCTAssertEqual(copies.map(\.start), [22, 22], "one shared offset, past the music on A1")
+        XCTAssertEqual(Set(copies.compactMap { store.project.locate(clip: $0.id)?.track }), [0, 2])
+        assertInvariants(store.project)
+        store.undo()
+        XCTAssertEqual(store.project.tracks.flatMap(\.clips).count, 3)
+    }
+
+    func testDuplicateSkipsLockedTracks() {
+        let (store, ids) = storeWithV1([(0, 2)])
+        store.selection = [ids[0]]
+        store.setTrack(store.project.tracks[0].id, locked: true)
+        let revision = store.revision
+        store.duplicateSelection()
+        XCTAssertEqual(store.revision, revision)
+        XCTAssertEqual(store.selection, [ids[0]])
+    }
+
+    // MARK: Coalescing
+
+    func testCoalescedGestureSurvivesPause() {
+        let (store, ids) = storeWithV1([(0, 2)])
+        let v1 = store.project.tracks[0].id
+        let key = "timeline-move-\(UUID())"
+        store.moveClip(ids[0], toTrack: v1, start: 2, coalesce: key)
+        Thread.sleep(forTimeInterval: 1.6)   // mouse held still
+        store.moveClip(ids[0], toTrack: v1, start: 3, coalesce: key)
+        store.endCoalescing()
+        store.undo()
+        XCTAssertEqual(store.clip(ids[0])!.start, 0, accuracy: 1e-9)
+        XCTAssertFalse(store.canUndo)
+    }
+
+    func testCoalescingEndsOnOtherKeyOrPlainMutate() {
+        let (store, ids) = storeWithV1([(0, 2)])
+        store.updateClip(ids[0], "Opacity", coalesce: "a") { $0.transform.opacity = 0.5 }
+        store.updateClip(ids[0], "Opacity", coalesce: "b") { $0.transform.opacity = 0.4 }
+        store.updateClip(ids[0], "Opacity", coalesce: "b") { $0.transform.opacity = 0.3 }
+        store.updateClip(ids[0], "Scale") { $0.transform.scale = 2 }
+        store.updateClip(ids[0], "Opacity", coalesce: "b") { $0.transform.opacity = 0.2 }
+        store.undo()
+        XCTAssertEqual(store.clip(ids[0])!.transform.opacity, 0.3, accuracy: 1e-9)
+        store.undo()
+        XCTAssertEqual(store.clip(ids[0])!.transform.scale, 1, accuracy: 1e-9)
+        store.undo()
+        XCTAssertEqual(store.clip(ids[0])!.transform.opacity, 0.5, accuracy: 1e-9)
+        store.undo()
+        XCTAssertFalse(store.canUndo)
+    }
+
+    func testCoalesceTimeoutIsOptIn() {
+        let (store, ids) = storeWithV1([(0, 2)])
+        store.updateClip(ids[0], "Color", coalesce: "color", coalesceTimeout: 0.05) { $0.transform.opacity = 0.5 }
+        store.updateClip(ids[0], "Color", coalesce: "color", coalesceTimeout: 0.05) { $0.transform.opacity = 0.4 }
+        Thread.sleep(forTimeInterval: 0.1)
+        store.updateClip(ids[0], "Color", coalesce: "color", coalesceTimeout: 0.05) { $0.transform.opacity = 0.3 }
+        store.undo()
+        XCTAssertEqual(store.clip(ids[0])!.transform.opacity, 0.4, accuracy: 1e-9)
+        store.undo()
+        XCTAssertFalse(store.canUndo)
+    }
+
+    func testAddClipsCoalesceIntoOneUndoStep() throws {
+        let store = makeStore()
+        let before = store.project
+        let key = "drop-\(UUID())"
+        var t: Seconds = 0
+        for id in [video.id, image.id, silentVideo.id] {
+            let clip = try XCTUnwrap(store.addClip(mediaID: id, at: t, coalesce: key))
+            t = store.clip(clip)!.end
+        }
+        store.endCoalescing()
+        XCTAssertEqual(store.project.tracks[0].clips.map(\.start), [0, 10, 15])
+        store.undo()
+        XCTAssertEqual(store.project, before)
+        // Without a key every add is its own step.
+        store.addClip(mediaID: video.id, at: 0)
+        store.addClip(mediaID: image.id, at: 10)
+        store.undo()
+        XCTAssertEqual(store.project.tracks[0].clips.count, 1)
+    }
+
+    func testDetachAudioCoalescesIntoOneUndoStep() {
+        let (store, ids) = storeWithV1([(0, 2), (4, 2), (8, 2)])
+        let before = store.project
+        let key = "detach-\(UUID())"
+        for id in ids { store.detachAudio(id, coalesce: key) }
+        store.endCoalescing()
+        XCTAssertEqual(store.project.tracks[2].clips.count, 3)
+        XCTAssertTrue(ids.allSatisfy { store.clip($0)!.audioMuted })
+        store.undo()
+        XCTAssertEqual(store.project, before)
+        XCTAssertFalse(store.canUndo)
+    }
+
+    func testUndoLimit() {
+        XCTAssertEqual(EditorStore.undoLimit, 1000)
+        let (store, ids) = storeWithV1([(0, 2)])
+        for i in 0..<(EditorStore.undoLimit + 5) {
+            store.updateClip(ids[0], "Opacity") { $0.transform.opacity = i.isMultiple(of: 2) ? 0.5 : 0.25 }
+        }
+        var undos = 0
+        while store.canUndo { store.undo(); undos += 1 }
+        XCTAssertEqual(undos, EditorStore.undoLimit)
+    }
+
+    // MARK: Hidden tracks
+
+    func testAutomaticPlacementSkipsHiddenTracks() throws {
+        let store = makeStore()
+        let v1 = store.project.tracks[0].id, v2 = store.project.tracks[1].id, a1 = store.project.tracks[2].id
+        store.setTrack(v2, hidden: true)
+        let title = try XCTUnwrap(store.addTextClip(at: 0))
+        XCTAssertEqual(store.project.track(containing: title)?.id, v1, "topmost visible video track")
+        let second = try XCTUnwrap(store.addTextClip(at: 0))
+        XCTAssertEqual(store.project.tracks.count, 5, "V1 busy, V2 hidden: a new video track")
+        XCTAssertEqual(store.project.locate(clip: second)?.track, 2)
+        XCTAssertFalse(store.project.tracks[2].isHidden)
+
+        store.setTrack(a1, hidden: true)
+        let music = try XCTUnwrap(store.addClip(mediaID: audio.id, at: 0))
+        XCTAssertEqual(store.project.track(containing: music)?.kind, .audio)
+        XCTAssertNotEqual(store.project.track(containing: music)?.id, a1)
+
+        // An explicit hidden target is respected.
+        let explicit = try XCTUnwrap(store.addClip(mediaID: video.id, trackID: v2, at: 0))
+        XCTAssertEqual(store.project.track(containing: explicit)?.id, v2)
+        assertInvariants(store.project)
+    }
+
+    func testDetachAudioSkipsHiddenAudioTrack() {
+        let (store, ids) = storeWithV1([(0, 2)])
+        store.setTrack(store.project.tracks[2].id, hidden: true)
+        store.detachAudio(ids[0])
+        XCTAssertTrue(store.project.tracks[2].clips.isEmpty)
+        XCTAssertEqual(store.project.tracks[3].clips.count, 1)
+    }
+
     // MARK: Invariants under a random edit sequence
 
     func testRandomEditSequenceKeepsInvariants() {
@@ -993,7 +1236,11 @@ final class StoreTests: XCTestCase {
             let clips = store.project.tracks.flatMap(\.clips)
             let any = clips.randomElement(using: &rng)
             let canGrow = clips.count < 80
-            switch Int.random(in: 0..<18, using: &rng) {
+            switch Int.random(in: 0..<20, using: &rng) {
+            case 18:
+                store.moveClips(randomSelection(clips), by: .random(in: -20...20, using: &rng),
+                                trackOffset: .random(in: -2...2, using: &rng))
+            case 19: if let track = store.project.tracks.randomElement(using: &rng) { store.setTrack(track.id, hidden: Bool.random(using: &rng)) }
             case 0, 1: store.addClip(mediaID: mediaIDs.randomElement(using: &rng)!, at: .random(in: 0...30, using: &rng))
             case 2: store.addTextClip(at: .random(in: 0...30, using: &rng))
             case 3: if let any { store.split(clipID: any.id, at: .random(in: any.start...any.end, using: &rng)) }
