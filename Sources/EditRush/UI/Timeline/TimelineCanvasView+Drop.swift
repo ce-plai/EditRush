@@ -69,9 +69,10 @@ extension TimelineCanvasView {
             place(items, preview: preview)
         case .files(let urls):
             let store = self.store
+            let key = "drop-\(UUID())"
             Task { @MainActor [weak self] in
-                let items = await ImportActions.importURLs(urls, store: store)
-                self?.place(items, preview: preview)
+                let items = await ImportActions.importURLs(urls, store: store, coalesce: key)
+                if let self { self.place(items, preview: preview, coalesce: key) } else { store.endCoalescing() }
             }
         }
         return true
@@ -151,10 +152,9 @@ extension TimelineCanvasView {
     }
 
     /// Adds `items` one after another starting at the preview position (one undo step) and selects them.
-    private func place(_ items: [MediaItem], preview: TimelineDropPreview) {
+    private func place(_ items: [MediaItem], preview: TimelineDropPreview, coalesce key: String = "drop-\(UUID())") {
         var t = preview.start
         var added: [UUID] = []
-        let key = "drop-\(UUID())"
         for item in items {
             let explicit = preview.isExplicitTrack ? preview.trackID.flatMap { id in
                 track(id)?.accepts(item.kind) == true ? id : nil

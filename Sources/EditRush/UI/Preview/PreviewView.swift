@@ -85,24 +85,24 @@ private struct PreviewStage: View {
             && $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) }
         guard !fileProviders.isEmpty || !textProviders.isEmpty else { return false }
         let store = self.store
+        let key = "preview-drop-\(UUID())"
         Task { @MainActor in
             var items: [MediaItem] = []
             let urls = await PreviewDropLoader.urls(from: fileProviders)
-            if !urls.isEmpty { items += await ImportActions.importURLs(urls, store: store) }
+            if !urls.isEmpty { items += await ImportActions.importURLs(urls, store: store, coalesce: key) }
             for string in await PreviewDropLoader.strings(from: textProviders) {
                 if let id = MediaDragPayload.mediaID(from: string), let media = store.media(id) { items.append(media) }
             }
-            Self.place(items, store: store)
+            Self.place(items, store: store, coalesce: key)
         }
         return true
     }
 
     /// Adds `items` at the playhead as one undo step, visual and audio media each chaining one
     /// after another, and selects them.
-    static func place(_ items: [MediaItem], store: EditorStore) {
+    static func place(_ items: [MediaItem], store: EditorStore, coalesce key: String = "preview-drop-\(UUID())") {
         var visualTime = store.playhead, audioTime = store.playhead
         var added: [UUID] = []
-        let key = "preview-drop-\(UUID())"
         for item in items {
             let isAudio = item.kind == .audio
             guard let id = store.addClip(mediaID: item.id, at: isAudio ? audioTime : visualTime, coalesce: key),

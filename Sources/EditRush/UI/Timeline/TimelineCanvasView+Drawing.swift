@@ -268,7 +268,8 @@ extension TimelineCanvasView {
     private func drawClip(_ clip: Clip, track: Track, row: TimelineRow, selected: Bool, in ctx: CGContext) {
         let rect = clipRect(clip, in: row)
         let media = mediaIndex[clip.mediaID ?? UUID()]
-        let kind: MediaKind? = clip.isText ? nil : media?.kind
+        // Detached audio keeps its video media, so audio tracks decide by track kind.
+        let kind: MediaKind? = clip.isText ? nil : (track.kind == .audio ? .audio : media?.kind)
         let style: TimelineClipStyle
         switch kind {
         case .video: style = .video

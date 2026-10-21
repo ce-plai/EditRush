@@ -12,7 +12,8 @@ import CoreGraphics
 //   tracks in reverse order (top row = top layer) above the audio tracks.
 // * Video tracks hold video, image and text clips. Audio tracks hold audio clips only.
 //   A video clip's embedded audio plays from the video clip itself (controlled by
-//   `volume` / `audioMuted`) until it is detached onto an audio track.
+//   `volume` / `audioMuted`) until it is detached onto an audio track. `audioMuted` silences
+//   a clip's audio on any track.
 // * Clips on one track never overlap and `Track.clips` is kept sorted by `start`.
 // * Fades: a clip's opacity (video) and volume (audio) are multiplied by
 //   `Clip.fadeFactor(at:)`. On the bottom layer over the black background that is
@@ -181,7 +182,8 @@ public struct Clip: Codable, Identifiable, Hashable, Sendable {
 
     /// Linear gain 0...2 for the clip's audio (audio clips and video clips with sound).
     public var volume: Double = 1
-    /// Silences a video clip's embedded audio (set when audio is detached).
+    /// Silences the clip's audio on any track: an audio clip, detached audio, or a video clip's
+    /// embedded audio (set on the video clip when its audio is detached).
     public var audioMuted: Bool = false
 
     /// Optional user label shown on the timeline instead of the media name.

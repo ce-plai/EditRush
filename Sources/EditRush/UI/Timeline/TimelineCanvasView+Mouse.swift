@@ -163,6 +163,10 @@ extension TimelineCanvasView {
         if event.clickCount == 2 {
             let t = min(max(rawTime(atX: p.x), hit.clip.start), max(hit.clip.start, hit.clip.end - store.frameDuration))
             playback.seek(to: t, precise: true)
+            if hit.clip.isText {
+                store.selection = [id]
+                InspectorFocus.shared.requestTextEditing(id)
+            }
             drag = .none
             return
         }

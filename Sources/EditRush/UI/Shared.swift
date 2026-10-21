@@ -40,6 +40,10 @@ enum ImportActions {
         }
         if !failures.isEmpty {
             store.statusMessage = "Couldn't import " + failures.map { "\($0.url.lastPathComponent) (\($0.reason))" }.joined(separator: ", ")
+        } else if fresh.isEmpty, !files.isEmpty {
+            store.statusMessage = files.count == 1
+                ? "\(files[0].deletingPathExtension().lastPathComponent) is already in the project"
+                : "Already in the project"
         }
         let byURL = Dictionary(store.project.media.map { ($0.url.standardizedFileURL, $0) }, uniquingKeysWith: { first, _ in first })
         return files.compactMap { byURL[$0.standardizedFileURL] }

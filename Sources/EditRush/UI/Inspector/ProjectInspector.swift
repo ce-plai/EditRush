@@ -19,8 +19,7 @@ struct ProjectInspector: View {
             VStack(spacing: 0) {
                 InspectorSection("Project") {
                     InspectorTextField(text: project.name, placeholder: "Untitled") { name in
-                        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        store.mutate("Rename Project") { $0.name = trimmed.isEmpty ? "Untitled" : trimmed }
+                        ShellActions.renameProject(name)
                     }
                 }
 
