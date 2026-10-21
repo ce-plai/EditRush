@@ -16,6 +16,8 @@ enum Entry {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var env: AppEnvironment { .shared }
+    private var windowObserver: NSObjectProtocol?
+    private var keyedWindows: Set<ObjectIdentifier> = []
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -27,10 +29,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         ShellKeyMonitor.shared.install()
         env.responder.start()
+        windowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let window = note.object as? NSWindow
+            MainActor.assumeIsolated { window.map { self?.prepare($0, becameKey: true) } }
+        }
+        ShellResponder.mainWindow.map { prepare($0, becameKey: false) }
+    }
+
+    /// Installs the export close guard on the editor window and, until it has first become key,
+    /// drops the text field AppKit picks as initial first responder, so Space / J / K / L work at once.
+    private func prepare(_ window: NSWindow, becameKey: Bool) {
+        guard window.identifier?.rawValue == "main", !keyedWindows.contains(ObjectIdentifier(window)) else { return }
+        if becameKey { keyedWindows.insert(ObjectIdentifier(window)) }
+        ShellExportGuard.install(on: window)
+        ShellResponder.endTextEditing(in: window)
+        DispatchQueue.main.async { ShellResponder.endTextEditing(in: window) }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         env.documents.open(urls)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard env.exporter.isExporting else { return .terminateNow }
+        guard ShellExportGuard.confirmStop() else { return .terminateCancel }
+        Task {
+            await ShellExportGuard.stopExport()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

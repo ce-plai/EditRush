@@ -32,7 +32,10 @@ pass a second path to also save a 1024 px PNG preview).
   ⌘I, dragging files from Finder anywhere onto the window, or opening them on the Dock icon.
 - **Media bin** with poster frames, audio waveforms, duration badges, a kind filter
   (All / Video / Audio / Images), missing-file detection and relinking (right-click → Locate File…).
-  Double-click an item (or use its **+** button) to add it at the playhead, or drag it to any track.
+  Double-click an item (or use its **+** button) to append it to the main track after the playhead
+  (the playhead moves to its end, so repeated adds build a sequence), or drag it to any track.
+  If a missing file comes back (e.g. you reconnect the drive), its thumbnails and the preview
+  reload when you switch back to EditRush.
 - **Multi-track timeline**: video / overlay tracks and audio tracks, snapping, zoom, split and join,
   ripple delete, close gaps, nudge, duplicate, cut / copy / paste, detach audio.
 - **Transitions**: fade up from black and fade to black, per clip.
@@ -41,8 +44,10 @@ pass a second path to also save a 1024 px PNG preview).
 - **Colour**: per-clip brightness, contrast, saturation and filters.
 - **Export** at 720p, 1080p, 4K or project size, H.264 or HEVC, MP4 or MOV, with progress,
   time remaining and cancel. You can hide the export sheet and keep editing; the toolbar's
-  Export button shows progress.
-- **Unlimited undo / redo** for every edit.
+  Export button shows progress. Quitting or closing the window during an export asks first
+  (Keep Exporting / Stop Export and Quit); a stopped or failed export never replaces an
+  existing file.
+- **Undo / redo** for every edit (the last 1000 steps).
 
 ## Keyboard shortcuts
 
@@ -113,11 +118,14 @@ in the inspector and the project name.
   Pending changes are flushed when you quit.
 - Use **Save As…** (⇧⌘S) to give a project its own file. New Project and Open ask before
   discarding work that has never been saved to a file.
+- A saved project is named after its file: renaming it (toolbar title or inspector) renames the
+  `.editrush` file in the same folder. If a file with that name already exists there, the
+  rename is refused and the old name stays.
 - Double-clicking a `.editrush` file in Finder opens it in EditRush. Media files dropped on the
   Dock icon are imported into the current project.
 
 ## Development notes
 
 `EditRush --snapshot out.png [--demo Fixtures] [--select-first] [--playhead 2] [--size 1600x1000]
-[--wait 2] [--select-media 0] [--status "message"] [--export-sheet]` renders the main window
+[--wait 2] [--select-media 0] [--bin-add 0,1] [--status "message"] [--export-sheet]` renders the main window
 (or the export sheet) offscreen to a PNG for UI checks without opening a window.

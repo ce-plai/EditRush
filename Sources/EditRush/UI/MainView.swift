@@ -242,7 +242,8 @@ private struct ShellProjectTitle: View {
                         .font(.headline)
                         .foregroundStyle(Theme.textPrimary)
                         .focused($isEditing)
-                        .onSubmit(commit)
+                        .onSubmit { isEditing = false }
+                        .onExitCommand { draft = store.project.name; isEditing = false }
                         .help("Rename project")
                 }
             if store.isDirty {
@@ -261,11 +262,8 @@ private struct ShellProjectTitle: View {
     }
 
     private func commit() {
-        let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { draft = store.project.name; return }
-        if name != store.project.name {
-            store.mutate("Rename Project") { $0.name = name }
-        }
+        if draft != store.project.name { ShellActions.renameProject(draft) }
+        draft = store.project.name
     }
 }
 

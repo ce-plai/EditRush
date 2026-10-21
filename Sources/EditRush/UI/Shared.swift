@@ -20,27 +20,29 @@ enum ImportActions {
     /// Probes `urls` (folders are expanded one level), adds new media to the project bin, reports
     /// failures in `store.statusMessage`, and returns the project's MediaItems for those URLs in
     /// input order (already-imported files return their existing item).
+    /// - coalesce: undo key shared with the edits that follow (e.g. placing the dropped clips),
+    ///   so the import and those edits undo as one step.
     @discardableResult
-    static func importURLs(_ urls: [URL], store: EditorStore) async -> [MediaItem] {
-        var files: [URL] = []
-        for url in urls {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                let children = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
-                files += children.filter { MediaImporter.supportedExtensions.contains($0.pathExtension.lowercased()) }
-                    .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            } else {
-                files.append(url)
-            }
-        }
+    static func importURLs(_ urls: [URL], store: EditorStore, coalesce: String? = nil) async -> [MediaItem] {
+        let files = await Task.detached(priority: .userInitiated) { MediaImporter.expandFolders(urls) }.value
         let known = Set(store.project.media.map { $0.url.standardizedFileURL })
         let fresh = files.filter { !known.contains($0.standardizedFileURL) }
         let (items, failures) = await MediaImporter.importFiles(fresh)
-        if !items.isEmpty { store.addMedia(items) }
+        if !items.isEmpty {
+            if let coalesce {
+                store.mutate("Import Media", coalesce: coalesce) { p in
+                    var present = Set(p.media.map { $0.url.standardizedFileURL })
+                    p.media += items.filter { present.insert($0.url.standardizedFileURL).inserted }
+                }
+            } else {
+                store.addMedia(items)
+            }
+        }
         if !failures.isEmpty {
             store.statusMessage = "Couldn't import " + failures.map { "\($0.url.lastPathComponent) (\($0.reason))" }.joined(separator: ", ")
         }
-        return files.compactMap { f in store.project.media.first { $0.url.standardizedFileURL == f.standardizedFileURL } }
+        let byURL = Dictionary(store.project.media.map { ($0.url.standardizedFileURL, $0) }, uniquingKeysWith: { first, _ in first })
+        return files.compactMap { byURL[$0.standardizedFileURL] }
     }
 
     /// Shows an NSOpenPanel for media and imports the choice.
