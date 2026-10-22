@@ -1,5 +1,9 @@
 # EditRush
 
+**[⬇ Download EditRush for Mac](https://github.com/ce-plai/EditRush/releases/latest/download/EditRush.dmg)**
+(macOS 15 or later, Apple Silicon and Intel). Open the DMG and drag EditRush to Applications.
+It updates itself when new versions come out.
+
 EditRush is a lightweight native macOS video editor, similar to Premiere Rush or CapCut. It
 does the everyday jobs well: cut clips together on a multi-track timeline, add titles, fades,
 transforms and colour adjustments, and export an MP4 or MOV. It launches instantly, plays and
