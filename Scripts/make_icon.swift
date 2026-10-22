@@ -41,112 +41,64 @@ func squircle(in rect: CGRect) -> CGPath {
     return path
 }
 
-/// Draws the icon in a 1024-unit coordinate space (origin bottom-left). `detail` drops fine
-/// elements (sprocket holes, highlights) at tiny sizes where they would turn into noise.
+/// Draws the icon in a 1024-unit coordinate space (origin bottom-left): the "cut" logo from
+/// Resources/Logo.svg on a squircle tile. `detail` drops the rim light at tiny sizes.
 func drawIcon(_ ctx: CGContext, detail: Bool) {
     let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
     let shape = squircle(in: tile)
+    // Logo.svg's 100-unit, y-down space mapped onto the tile.
+    func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        CGPoint(x: tile.minX + x * tile.width / 100, y: tile.maxY - y * tile.height / 100)
+    }
+    func polygon(_ points: [CGPoint]) -> CGPath {
+        let path = CGMutablePath()
+        path.addLines(between: points)
+        path.closeSubpath()
+        return path
+    }
 
-    // Drop shadow + body.
+    // Drop shadow + black body.
     ctx.saveGState()
     ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 30, color: rgb(0x000000, 0.45))
     ctx.addPath(shape)
-    ctx.setFillColor(rgb(0x15171E))
+    ctx.setFillColor(rgb(0x000000))
     ctx.fillPath()
     ctx.restoreGState()
 
     ctx.saveGState()
     ctx.addPath(shape)
     ctx.clip()
-    ctx.drawLinearGradient(gradient([rgb(0x2C3242), rgb(0x1A1D27), rgb(0x0F1117)], [0, 0.55, 1]),
-                           start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 100), options: [])
-    // Soft blue bloom behind the play mark.
-    ctx.drawRadialGradient(gradient([rgb(0x4D8FFF, 0.32), rgb(0x4D8FFF, 0)], [0, 1]),
-                           startCenter: CGPoint(x: 560, y: 512), startRadius: 0,
-                           endCenter: CGPoint(x: 560, y: 512), endRadius: 380, options: [])
 
-    // Film-strip perforations along the top and bottom edges.
-    if detail {
-        for row in [CGFloat(812), 176] {
-            ctx.setFillColor(rgb(0xFFFFFF, 0.11))
-            let holes = 8, width: CGFloat = 52, gap: CGFloat = 30
-            var x = 512 - (CGFloat(holes) * width + CGFloat(holes - 1) * gap) / 2
-            for _ in 0..<holes {
-                ctx.addPath(CGPath(roundedRect: CGRect(x: x, y: row, width: width, height: 36),
-                                   cornerWidth: 10, cornerHeight: 10, transform: nil))
-                x += width + gap
-            }
-            ctx.fillPath()
-        }
-        ctx.setFillColor(rgb(0xFFFFFF, 0.06))
-        ctx.fill(CGRect(x: 100, y: 784, width: 824, height: 4))
-        ctx.fill(CGRect(x: 100, y: 236, width: 824, height: 4))
-    }
-    ctx.restoreGState()
-
-    // Speed streaks (orange), tapering in from the left.
-    let streaks: [(y: CGFloat, start: CGFloat, height: CGFloat)] = [(606, 228, 38), (512, 168, 46), (418, 248, 38)]
-    for streak in streaks {
-        let end: CGFloat = 400
-        let rect = CGRect(x: streak.start, y: streak.y - streak.height / 2, width: end - streak.start, height: streak.height)
+    // Yellow motion trails off the cut's top and bottom ends, fading out.
+    let trails: [(points: [CGPoint], from: CGPoint, to: CGPoint)] = [
+        ([p(39.748, 2.42), p(47.871, 2.42), p(42, 25), p(26.015, 28.285)], p(42, 25), p(37.334, 22.293)),
+        ([p(42.252, 97.58), p(34.129, 97.58), p(40, 75), p(55.985, 71.715)], p(40, 75), p(44.666, 77.707)),
+    ]
+    for trail in trails {
         ctx.saveGState()
-        ctx.addPath(CGPath(roundedRect: rect, cornerWidth: streak.height / 2, cornerHeight: streak.height / 2, transform: nil))
+        ctx.addPath(polygon(trail.points))
         ctx.clip()
-        ctx.drawLinearGradient(gradient([rgb(0xFF8A2A, 0), rgb(0xFF8A2A, 0.85), rgb(0xFFB054)], [0, 0.55, 1]),
-                               start: CGPoint(x: rect.minX, y: 0), end: CGPoint(x: rect.maxX, y: 0), options: [])
+        ctx.drawLinearGradient(gradient([rgb(0xFFC900), rgb(0xFBB03B, 0)], [0, 1]),
+                               start: trail.from, end: trail.to, options: extend)
         ctx.restoreGState()
     }
 
-    // Rounded play triangle with a blue gradient and glow.
-    let triangle = CGMutablePath()
-    triangle.move(to: CGPoint(x: 452, y: 304))
-    triangle.addLine(to: CGPoint(x: 452, y: 720))
-    triangle.addLine(to: CGPoint(x: 800, y: 512))
-    triangle.closeSubpath()
-
-    ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 36, color: rgb(0x3D7BFF, 0.6))
-    ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-    ctx.addPath(triangle)
+    // The two halves of the cut frame.
+    ctx.addPath(polygon([p(17, 25), p(42, 25), p(29, 75), p(17, 75)]))
     ctx.setFillColor(rgb(0xFFFFFF))
-    ctx.setStrokeColor(rgb(0xFFFFFF))
-    ctx.setLineWidth(64)
-    ctx.setLineJoin(.round)
-    ctx.drawPath(using: .fillStroke)
-    ctx.setBlendMode(.sourceIn)
-    ctx.drawLinearGradient(gradient([rgb(0x8CB6FF), rgb(0x4D8FFF), rgb(0x2D63E0)], [0, 0.5, 1]),
-                           start: CGPoint(x: 470, y: 760), end: CGPoint(x: 700, y: 270), options: extend)
-    ctx.endTransparencyLayer()
-    ctx.restoreGState()
+    ctx.fillPath()
+    ctx.addPath(polygon([p(53, 25), p(83, 25), p(83, 75), p(40, 75)]))
+    ctx.setFillColor(rgb(0xFF6633))
+    ctx.fillPath()
 
-    // Glossy highlight on the triangle's upper half.
+    // Hairline rim light so the black tile reads on a dark Dock.
     if detail {
-        ctx.saveGState()
-        ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-        ctx.addPath(triangle)
-        ctx.setFillColor(rgb(0xFFFFFF))
-        ctx.setStrokeColor(rgb(0xFFFFFF))
-        ctx.setLineWidth(64)
-        ctx.setLineJoin(.round)
-        ctx.drawPath(using: .fillStroke)
-        ctx.setBlendMode(.sourceIn)
-        ctx.drawLinearGradient(gradient([rgb(0xFFFFFF, 0.28), rgb(0xFFFFFF, 0)], [0, 1]),
-                               start: CGPoint(x: 0, y: 752), end: CGPoint(x: 0, y: 540), options: extend)
-        ctx.endTransparencyLayer()
-        ctx.restoreGState()
-    }
-
-    // Hairline rim light on the tile.
-    if detail {
-        ctx.saveGState()
-        ctx.addPath(shape)
-        ctx.clip()
         ctx.addPath(shape)
         ctx.setStrokeColor(rgb(0xFFFFFF, 0.10))
         ctx.setLineWidth(6)
         ctx.strokePath()
-        ctx.restoreGState()
     }
+    ctx.restoreGState()
 }
 
 func render(pixels: Int) -> CGImage {
