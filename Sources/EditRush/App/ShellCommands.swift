@@ -1,7 +1,7 @@
 import SwiftUI
 import EditRushCore
 
-/// Menu bar: Check for Updates, File, Edit, Clip, View and Playback commands.
+/// Menu bar: About / Check for Updates, File, Edit, Clip, View and Playback commands.
 ///
 /// Items are small views so their titles and enabled states track the store. Plain-key
 /// shortcuts shown here (Space, arrows, ⌫, J/K/L, …) are actually dispatched by
@@ -10,7 +10,8 @@ struct ShellCommands: Commands {
     let env: AppEnvironment
 
     var body: some Commands {
-        CommandGroup(after: .appInfo) {
+        CommandGroup(replacing: .appInfo) {
+            Button("About EditRush", action: AboutPanel.show)
             if let updater = AppUpdater.shared.updater { CheckForUpdatesMenuItem(updater: updater) }
         }
         CommandGroup(replacing: .newItem) { FileMenuItems(store: env.store) }
