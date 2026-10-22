@@ -37,7 +37,10 @@ enum SnapshotRunner {
             if let demo = value("--demo") {
                 env.store.replaceProject(await DemoProject.make(from: URL(fileURLWithPath: demo)), url: nil)
             } else if let path = value("--project") {
-                do { try env.store.open(URL(fileURLWithPath: path)) } catch { print("open failed:", error) }
+                do { try env.store.open(URL(fileURLWithPath: path)) } catch {
+                    print("open failed:", error.localizedDescription)
+                    exit(1)
+                }
             }
             if args.contains("--select-first"),
                let c = env.store.project.tracks.flatMap(\.clips).first {

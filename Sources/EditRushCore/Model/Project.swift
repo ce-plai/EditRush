@@ -333,3 +333,156 @@ public enum ClipGeometry {
         return CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h)
     }
 }
+
+// MARK: - Decoding
+//
+// Project files may be written by hand or by tools, so any field with a default can be left out.
+// Required: Project `tracks`, MediaItem `id` / `url` / `kind`, Clip `start` / `duration`, Track `kind`,
+// RGBA `r` / `g` / `b`.
+// A media `url` may also be a plain path; relative paths resolve against the project file's folder
+// (`CodingUserInfoKey.projectDirectory`).
+
+extension CodingUserInfoKey {
+    /// Folder of the project file being decoded (a `URL`), for relative media paths.
+    static let projectDirectory = CodingUserInfoKey(rawValue: "EditRush.projectDirectory")!
+}
+
+extension KeyedDecodingContainer {
+    /// Decodes `key` into `value` when present, otherwise leaves the default.
+    func fill<T: Decodable>(_ value: inout T, _ key: Key) throws {
+        if let v = try decodeIfPresent(T.self, forKey: key) { value = v }
+    }
+}
+
+extension MediaItem {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try c.decode(String.self, forKey: .url)
+        let url: URL
+        if raw.contains("://"), let u = URL(string: raw) {
+            url = u
+        } else {
+            let base = decoder.userInfo[.projectDirectory] as? URL
+            url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, relativeTo: base).absoluteURL.standardizedFileURL
+        }
+        self.init(id: try c.decode(UUID.self, forKey: .id), url: url,
+                  name: url.deletingPathExtension().lastPathComponent,
+                  kind: try c.decode(MediaKind.self, forKey: .kind), duration: 0)
+        try c.fill(&name, .name)
+        try c.fill(&duration, .duration)
+        try c.fill(&pixelWidth, .pixelWidth)
+        try c.fill(&pixelHeight, .pixelHeight)
+        try c.fill(&frameRate, .frameRate)
+        try c.fill(&hasAudio, .hasAudio)
+    }
+}
+
+extension RGBA {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(try c.decode(Double.self, forKey: .r), try c.decode(Double.self, forKey: .g),
+                  try c.decode(Double.self, forKey: .b), try c.decodeIfPresent(Double.self, forKey: .a) ?? 1)
+    }
+}
+
+extension ClipTransform {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try c.fill(&scale, .scale)
+        try c.fill(&offsetX, .offsetX)
+        try c.fill(&offsetY, .offsetY)
+        try c.fill(&rotation, .rotation)
+        try c.fill(&opacity, .opacity)
+        try c.fill(&flipHorizontal, .flipHorizontal)
+        try c.fill(&flipVertical, .flipVertical)
+        try c.fill(&fitMode, .fitMode)
+    }
+}
+
+extension ColorAdjustments {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try c.fill(&exposure, .exposure)
+        try c.fill(&brightness, .brightness)
+        try c.fill(&contrast, .contrast)
+        try c.fill(&saturation, .saturation)
+        try c.fill(&temperature, .temperature)
+        try c.fill(&vignette, .vignette)
+    }
+}
+
+extension TextStyle {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try c.fill(&text, .text)
+        try c.fill(&fontFamily, .fontFamily)
+        try c.fill(&isBold, .isBold)
+        try c.fill(&isItalic, .isItalic)
+        try c.fill(&fontSize, .fontSize)
+        try c.fill(&color, .color)
+        try c.fill(&backgroundColor, .backgroundColor)
+        try c.fill(&alignment, .alignment)
+        try c.fill(&shadow, .shadow)
+        try c.fill(&outlineWidth, .outlineWidth)
+        try c.fill(&outlineColor, .outlineColor)
+    }
+}
+
+extension Clip {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(mediaID: try c.decodeIfPresent(UUID.self, forKey: .mediaID),
+                  start: try c.decode(Seconds.self, forKey: .start),
+                  duration: try c.decode(Seconds.self, forKey: .duration),
+                  text: try c.decodeIfPresent(TextStyle.self, forKey: .text))
+        try c.fill(&id, .id)
+        try c.fill(&sourceIn, .sourceIn)
+        try c.fill(&transform, .transform)
+        try c.fill(&color, .color)
+        try c.fill(&filter, .filter)
+        try c.fill(&filterIntensity, .filterIntensity)
+        try c.fill(&fadeIn, .fadeIn)
+        try c.fill(&fadeOut, .fadeOut)
+        try c.fill(&volume, .volume)
+        try c.fill(&audioMuted, .audioMuted)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+    }
+}
+
+extension Track {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(kind: try c.decode(TrackKind.self, forKey: .kind))
+        try c.fill(&id, .id)
+        try c.fill(&clips, .clips)
+        try c.fill(&isMuted, .isMuted)
+        try c.fill(&isHidden, .isHidden)
+        try c.fill(&isLocked, .isLocked)
+    }
+}
+
+extension CanvasSettings {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try c.fill(&width, .width)
+        try c.fill(&height, .height)
+        try c.fill(&frameRate, .frameRate)
+        try c.fill(&backgroundColor, .backgroundColor)
+    }
+}
+
+extension Project {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try c.fill(&version, .version)
+        try c.fill(&name, .name)
+        try c.fill(&canvas, .canvas)
+        try c.fill(&media, .media)
+        tracks = try c.decode([Track].self, forKey: .tracks)
+    }
+}

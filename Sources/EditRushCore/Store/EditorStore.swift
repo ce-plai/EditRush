@@ -237,13 +237,85 @@ public final class EditorStore {
     /// Throws `ProjectFileError.newerVersion` for files from a newer EditRush; reports
     /// media files that no longer exist in `statusMessage`.
     public func open(_ url: URL) throws {
-        var p = try Self.decodeProject(Data(contentsOf: url))
-        p.name = url.deletingPathExtension().lastPathComponent
-        replaceProject(p, url: url)
+        replaceProject(ProjectValidator.normalized(try Self.readProjectFile(url)), url: url)
         reportMissingMedia()
     }
 
+    /// Decodes a `.editrush` file as written, before `ProjectValidator.normalized`; relative
+    /// media paths resolve against the file's folder and the name follows the file name.
+    public nonisolated static func readProjectFile(_ url: URL) throws -> Project {
+        var p = try decodeProject(Data(contentsOf: url), relativeTo: url.deletingLastPathComponent())
+        p.name = url.deletingPathExtension().lastPathComponent
+        return p
+    }
+
     public func newProject() { replaceProject(.empty(), url: nil) }
+
+    // MARK: - Outside changes
+
+    /// The project as last saved / opened, i.e. what its file holds as far as the editor knows.
+    public var savedProject: Project { cleanProject }
+
+    /// Why the project file couldn't be loaded the last time it changed outside EditRush, or nil.
+    @ObservationIgnored private var unusableFileReason: String?
+
+    /// Brings in a version of the project file written by another app (e.g. an agent) as one
+    /// undoable step. Edits not yet saved are merged with it (`ProjectMerge`); afterwards the store
+    /// is dirty only when those edits still need writing to the file.
+    @discardableResult
+    public func applyExternalChange(_ theirs: Project) -> ProjectMerge.Outcome {
+        var outcome = isDirty
+            ? ProjectMerge.merge(base: cleanProject, ours: project, theirs: theirs)
+            : ProjectMerge.Outcome(project: theirs, conflicts: 0, droppedOurs: false)
+        outcome.project.name = project.name
+        cleanProject = theirs
+        lastCoalesceKey = nil
+        mutate("Outside Change") { $0 = outcome.project }
+        isDirty = project != cleanProject
+        return outcome
+    }
+
+    /// Loads changes made to the project file outside EditRush since it was last saved or opened,
+    /// and says so in `statusMessage`. Returns false while the file can't be used (unreadable, or
+    /// invalid per `ProjectValidator`): callers must not overwrite it then, so the other app's
+    /// work isn't lost.
+    @discardableResult
+    public func syncWithFile() -> Bool {
+        guard let url = projectURL, FileManager.default.fileExists(atPath: url.path) else { return true }
+        let raw: Project
+        do {
+            raw = try Self.readProjectFile(url)
+        } catch {
+            return reportUnusableFile(url, error.localizedDescription)
+        }
+        let theirs = ProjectValidator.normalized(raw)
+        guard theirs != cleanProject else {
+            unusableFileReason = nil
+            return true
+        }
+        if let issue = ProjectValidator.issues(in: raw, checkFiles: false).first(where: { $0.severity == .error }) {
+            return reportUnusableFile(url, "\(issue.path): \(issue.message)")
+        }
+        unusableFileReason = nil
+        let outcome = applyExternalChange(theirs)
+        var message = "Loaded changes made to “\(url.lastPathComponent)” outside EditRush"
+        if outcome.droppedOurs {
+            message += ". They clashed with your latest edits, which were set aside (Undo brings them back)."
+        } else if outcome.conflicts > 0 {
+            message += ". Where you'd both changed the same thing, your version was kept."
+        }
+        statusMessage = message
+        return true
+    }
+
+    private func reportUnusableFile(_ url: URL, _ reason: String) -> Bool {
+        if reason != unusableFileReason {
+            unusableFileReason = reason
+            statusMessage = "“\(url.lastPathComponent)” was changed outside EditRush but can't be loaded (\(reason)). "
+                + "Your edits won't be saved to it until it's fixed."
+        }
+        return false
+    }
 
     /// Writes the current project to `autosaveFileURL` plus a small sidecar recording `projectURL`.
     /// Cheap: skipped when nothing changed since the last autosave; encoding and the atomic
@@ -310,8 +382,9 @@ public final class EditorStore {
         #endif
     }()
 
-    private static func decodeProject(_ data: Data) throws -> Project {
+    private nonisolated static func decodeProject(_ data: Data, relativeTo directory: URL? = nil) throws -> Project {
         let decoder = JSONDecoder()
+        decoder.userInfo[.projectDirectory] = directory
         let probe: EditorProjectVersionProbe
         do { probe = try decoder.decode(EditorProjectVersionProbe.self, from: data) } catch {
             throw ProjectFileError.unreadable("not JSON")
@@ -324,13 +397,18 @@ public final class EditorStore {
         }
     }
 
-    private static func describe(_ error: DecodingError) -> String {
+    private nonisolated static func describe(_ error: DecodingError) -> String {
+        func location(_ c: DecodingError.Context) -> String {
+            c.codingPath.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
+        }
         func path(_ c: DecodingError.Context) -> String {
-            let p = c.codingPath.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
+            let p = location(c)
             return p.isEmpty ? c.debugDescription : "\(p): \(c.debugDescription)"
         }
         switch error {
-        case let .keyNotFound(key, c): return "missing \(key.stringValue) at \(path(c))"
+        case let .keyNotFound(key, c):
+            let p = location(c)
+            return p.isEmpty ? "missing \(key.stringValue)" : "missing \(key.stringValue) at \(p)"
         case let .typeMismatch(_, c), let .valueNotFound(_, c), let .dataCorrupted(c): return path(c)
         @unknown default: return error.localizedDescription
         }

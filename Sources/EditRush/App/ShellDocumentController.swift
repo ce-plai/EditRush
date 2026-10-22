@@ -9,6 +9,9 @@ import EditRushCore
 /// Every project change is debounced (1.5 s) into `store.autosave()`; projects that have a file
 /// are also written back to it, so explicit saving is rarely needed. A project with a file is
 /// named after it, so renaming such a project renames its file.
+///
+/// The project's file is watched, so changes another app or an agent writes to it load live
+/// (merged with edits not yet saved, see `EditorStore.syncWithFile`).
 @MainActor
 final class ShellDocumentController {
     static let projectType = UTType(filenameExtension: Project.fileExtension, conformingTo: .json) ?? .json
@@ -19,6 +22,7 @@ final class ShellDocumentController {
     private var changesSubscription: AnyCancellable?
     /// Revision last written by `flush()`; skips redundant writes.
     private var flushedRevision = -1
+    private var watcher: FileWatcher?
 
     init(store: EditorStore, playback: PlaybackController) {
         self.store = store
@@ -34,6 +38,9 @@ final class ShellDocumentController {
         changesSubscription = store.changes
             .debounce(for: .seconds(Self.autosaveDelay), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.flush() } }
+        // The file may have been changed while EditRush wasn't running.
+        watchProjectFile()
+        store.syncWithFile()
     }
 
     /// Writes pending changes now (autosave + the project file when it has one).
@@ -42,7 +49,8 @@ final class ShellDocumentController {
         if fileNameIsStale, renameProjectFile(to: store.project.name) { return }
         flushedRevision = store.revision
         store.autosave()
-        guard let url = store.projectURL, store.isDirty else { return }
+        // Pick up outside changes first, and never overwrite a file that couldn't be loaded.
+        guard let url = store.projectURL, store.isDirty, store.syncWithFile(), store.isDirty else { return }
         do {
             try store.save(to: url)
         } catch {
@@ -57,6 +65,7 @@ final class ShellDocumentController {
         guard confirmDiscardingChanges() else { return }
         playback.pause()
         store.newProject()
+        watchProjectFile()
         flush()
         releaseTextFocus()
     }
@@ -78,6 +87,7 @@ final class ShellDocumentController {
     func save() -> Bool {
         guard let url = store.projectURL else { return saveAs() }
         if fileNameIsStale { return renameProjectFile(to: store.project.name) }
+        store.syncWithFile()
         return write(to: url)
     }
 
@@ -132,6 +142,7 @@ final class ShellDocumentController {
         do {
             try store.open(url)
             flushedRevision = store.revision
+            watchProjectFile()
             store.autosave()
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
             releaseTextFocus()
@@ -145,6 +156,7 @@ final class ShellDocumentController {
             try store.save(to: url)
             store.projectURL = url
             flushedRevision = store.revision
+            watchProjectFile()
             store.autosave()
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
             if announce { store.statusMessage = "Saved “\(url.lastPathComponent)”" }
@@ -152,6 +164,14 @@ final class ShellDocumentController {
         } catch {
             store.statusMessage = "Couldn't save “\(url.lastPathComponent)”: \(error.localizedDescription)"
             return false
+        }
+    }
+
+    /// Watches the project's current file (none for a project without one).
+    private func watchProjectFile() {
+        guard watcher?.url != store.projectURL else { return }
+        watcher = store.projectURL.map { url in
+            FileWatcher(url: url) { [weak self] in MainActor.assumeIsolated { _ = self?.store.syncWithFile() } }
         }
     }
 

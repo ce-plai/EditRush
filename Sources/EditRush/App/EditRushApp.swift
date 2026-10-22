@@ -5,7 +5,9 @@ import EditRushCore
 @main
 enum Entry {
     static func main() {
-        if CommandLine.arguments.contains("--snapshot") {
+        if CommandLineTool.handles(CommandLine.arguments) {
+            MainActor.assumeIsolated { CommandLineTool.run(CommandLine.arguments) }
+        } else if CommandLine.arguments.contains("--snapshot") {
             MainActor.assumeIsolated { SnapshotRunner.run() }
         } else {
             EditRushApp.main()

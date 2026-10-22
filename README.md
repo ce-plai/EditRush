@@ -124,6 +124,24 @@ in the inspector and the project name.
 - Double-clicking a `.editrush` file in Finder opens it in EditRush. Media files dropped on the
   Dock icon are imported into the current project.
 
+## Scripts and AI agents
+
+Project files are plain JSON, so a script or agent can build an edit by writing one. The app
+binary has command-line modes to probe media, validate a project, render a frame and export,
+all without opening a window:
+
+```sh
+EditRush.app/Contents/MacOS/EditRush --probe clip.mov            # media entry for the project
+EditRush.app/Contents/MacOS/EditRush --validate edit.editrush
+EditRush.app/Contents/MacOS/EditRush --frame f.png --project edit.editrush --at 5
+EditRush.app/Contents/MacOS/EditRush --export out.mp4 --project edit.editrush
+```
+
+The open project's file is watched, so an agent can edit it while you work: its changes appear
+live as one undoable step and are merged with any edits of yours not yet saved.
+[docs/project-format.md](docs/project-format.md) describes the file format, every option, and how
+to edit alongside the app.
+
 ## Development notes
 
 `EditRush --snapshot out.png [--demo Fixtures] [--select-first] [--playhead 2] [--size 1600x1000]
