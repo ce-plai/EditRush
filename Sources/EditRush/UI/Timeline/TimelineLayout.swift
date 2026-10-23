@@ -167,4 +167,9 @@ enum TimelineFormat {
     static func shortDuration(_ d: Seconds) -> String {
         d < 60 ? String(format: "%.1fs", d) : rulerTime(d)
     }
+
+    /// Playback speed as a percentage, e.g. "50%", "250%".
+    static func speed(_ s: Double) -> String {
+        String(format: "%.0f%%", s * 100)
+    }
 }

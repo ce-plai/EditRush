@@ -14,6 +14,8 @@ rm -f _land.mp4
 # Solid colours for pixel-exact engine tests (no audio)
 "${F[@]}" -f lavfi -i "color=c=red:size=640x360:rate=30:duration=3" -c:v libx264 -pix_fmt yuv420p -x264-params keyint=1 solid_red.mp4
 "${F[@]}" -f lavfi -i "color=c=blue:size=640x360:rate=30:duration=3" -c:v libx264 -pix_fmt yuv420p -x264-params keyint=1 solid_blue.mov
+# 3 s red then 3 s blue, for speed tests
+"${F[@]}" -f lavfi -i "color=c=red:size=640x360:rate=30:duration=3" -f lavfi -i "color=c=blue:size=640x360:rate=30:duration=3" -filter_complex "[0][1]concat=n=2:v=1" -c:v libx264 -pix_fmt yuv420p -x264-params keyint=1 red_then_blue.mp4
 "${F[@]}" -f lavfi -i "color=c=0x00FF00:size=400x400" -frames:v 1 solid_green.png
 "${F[@]}" -f lavfi -i "color=c=white:size=800x600" -frames:v 1 -q:v 2 solid_white.jpg
 # Photo + transparent PNG logo

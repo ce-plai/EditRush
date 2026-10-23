@@ -265,7 +265,7 @@ extension EditorStore {
 
     /// Trims a clip edge to timeline time `t`, clamped by neighbours, media bounds (video/audio
     /// cannot extend past the source; images/text are unbounded), and a 1-frame minimum.
-    /// Leading-edge trims move `start` and `sourceIn` together.
+    /// Leading-edge trims move `start` and `sourceIn` together (`sourceIn` at the clip's speed).
     public func trimClip(_ id: UUID, edge: TrimEdge, to t: Seconds, coalesce: String? = nil) {
         mutate("Trim Clip", coalesce: coalesce) { p in
             guard let l = p.locate(clip: id), !p.tracks[l.track].isLocked else { return }
@@ -278,17 +278,17 @@ extension EditorStore {
             case .leading:
                 var lower = l.clip > 0 ? clips[l.clip - 1].end : 0
                 if StoreTimeline.playsSourceRange(c, in: p) {
-                    lower = max(lower, StoreTimeline.ceilFrame(c.start - c.sourceIn, canvas))
+                    lower = max(lower, StoreTimeline.ceilFrame(c.start - c.sourceIn / c.speed, canvas))
                 }
                 let upper = canvas.quantize(c.end - frame)
                 let newStart = min(max(t, lower), upper)
                 let delta = newStart - c.start
-                if StoreTimeline.playsSourceRange(c, in: p) { c.sourceIn = max(0, c.sourceIn + delta) }
+                if StoreTimeline.playsSourceRange(c, in: p) { c.sourceIn = max(0, c.sourceIn + delta * c.speed) }
                 c.duration = canvas.quantize(c.end - newStart)
                 c.start = newStart
             case .trailing:
                 var upper = l.clip + 1 < clips.count ? clips[l.clip + 1].start : .infinity
-                if let total { upper = min(upper, StoreTimeline.floorFrame(c.start + total - c.sourceIn, canvas)) }
+                if let total { upper = min(upper, StoreTimeline.floorFrame(c.start + (total - c.sourceIn) / c.speed, canvas)) }
                 let newEnd = max(min(t, upper), c.start + frame)
                 c.duration = canvas.quantize(newEnd - c.start)
             }
@@ -321,8 +321,37 @@ extension EditorStore {
         }
     }
 
+    /// Sets the playback speed (clamped to `Clip.speedRange`) of the video and audio clips `ids` on
+    /// unlocked tracks; images and titles are skipped. Each clip keeps its source range, so its length
+    /// changes by the inverse factor (cut to what the media has left), and later clips on its track
+    /// ripple by the change so nothing overlaps. With `coalesce` (live drags), every step is computed
+    /// from the project before the gesture, so dragging back and forth never drifts.
+    public func setSpeed(_ speed: Double, for ids: Set<UUID>, coalesce: String? = nil) {
+        let base = coalescingBase(coalesce)
+        let speed = StoreTimeline.clamp(speed, Clip.speedRange, default: 1)
+        mutate("Change Speed", coalesce: coalesce) { p in
+            p = base
+            let canvas = p.canvas
+            for id in ids {
+                guard let l = p.locate(clip: id), !p.tracks[l.track].isLocked else { continue }
+                var c = p.tracks[l.track].clips[l.clip]
+                guard StoreTimeline.playsSourceRange(c, in: p), c.speed != speed else { continue }
+                let oldEnd = c.end
+                c.duration = c.duration * c.speed / speed
+                c.speed = speed
+                StoreTimeline.normalize(&c, in: p)
+                let delta = c.end - oldEnd
+                for j in p.tracks[l.track].clips.indices where j != l.clip {
+                    let later = p.tracks[l.track].clips[j]
+                    if later.start >= oldEnd - StoreTimeline.epsilon { p.tracks[l.track].clips[j].start = canvas.quantize(later.start + delta) }
+                }
+                p.tracks[l.track].clips[l.clip] = c
+            }
+        }
+    }
+
     /// Moves a video clip's embedded audio onto an audio track as a separate audio clip
-    /// (same media, start, sourceIn, duration, volume, fades) and sets `audioMuted` on the video clip.
+    /// (same media, start, sourceIn, speed, duration, volume, fades) and sets `audioMuted` on the video clip.
     /// Uses the lowest visible, unlocked audio track that is free for the clip's range, else a new
     /// audio track. Detaching several clips with one shared `coalesce` key forms one undo step
     /// (until `endCoalescing()`).
@@ -332,6 +361,7 @@ extension EditorStore {
             let video = p.tracks[l.track].clips[l.clip]
             guard let m = p.media(video.mediaID), m.kind == .video, m.hasAudio, !video.audioMuted else { return }
             var audio = Clip(mediaID: m.id, start: video.start, duration: video.duration, sourceIn: video.sourceIn)
+            audio.speed = video.speed
             audio.volume = video.volume
             audio.fadeIn = video.fadeIn
             audio.fadeOut = video.fadeOut

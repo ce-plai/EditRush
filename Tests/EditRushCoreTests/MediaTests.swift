@@ -6,7 +6,7 @@ import CoreGraphics
 final class MediaTests: XCTestCase {
     private static let allFixtures = [
         "clip_a.mp4", "clip_b.mov", "rotated_portrait.mov", "solid_red.mp4", "solid_blue.mov",
-        "solid_green.png", "solid_white.jpg", "photo.jpg", "logo.png",
+        "red_then_blue.mp4", "solid_green.png", "solid_white.jpg", "photo.jpg", "logo.png",
         "music.mp3", "tone.wav", "voice.ogg", "opus.ogg",
     ]
 
@@ -31,6 +31,7 @@ final class MediaTests: XCTestCase {
             "rotated_portrait.mov": Expect(kind: .video, duration: 4, size: (720, 1280), hasAudio: false),
             "solid_red.mp4": Expect(kind: .video, duration: 3, size: (640, 360), hasAudio: false),
             "solid_blue.mov": Expect(kind: .video, duration: 3, size: (640, 360), hasAudio: false),
+            "red_then_blue.mp4": Expect(kind: .video, duration: 6, size: (640, 360), hasAudio: false),
             "solid_green.png": Expect(kind: .image, duration: 0, size: (400, 400), hasAudio: false),
             "solid_white.jpg": Expect(kind: .image, duration: 0, size: (800, 600), hasAudio: false),
             "photo.jpg": Expect(kind: .image, duration: 0, size: (4000, 3000), hasAudio: false),
@@ -105,10 +106,10 @@ final class MediaTests: XCTestCase {
         let start = clock.now
         let (items, failures) = await MediaImporter.importFiles(urls)
         let elapsed = clock.now - start
-        XCTAssertEqual(items.count, 13)
+        XCTAssertEqual(items.count, Self.allFixtures.count)
         XCTAssertTrue(failures.isEmpty)
         XCTAssertEqual(items.map(\.url), urls, "results must be in input order")
-        XCTAssertLessThan(elapsed, .milliseconds(500), "importing 13 fixtures took \(elapsed)")
+        XCTAssertLessThan(elapsed, .milliseconds(500), "importing \(items.count) fixtures took \(elapsed)")
         print("Imported \(items.count) fixtures in \(elapsed)")
     }
 
@@ -281,7 +282,7 @@ final class MediaTests: XCTestCase {
     func testDemoProjectHasNonOverlappingClips() async throws {
         _ = try Fixture.url("clip_a.mp4")
         let project = await DemoProject.make(from: Fixture.folder)
-        XCTAssertEqual(project.media.count, 13)
+        XCTAssertEqual(project.media.count, Self.allFixtures.count)
         XCTAssertFalse(project.tracks[0].clips.isEmpty)
         for track in project.tracks {
             XCTAssertEqual(track.clips.map(\.start), track.clips.map(\.start).sorted())

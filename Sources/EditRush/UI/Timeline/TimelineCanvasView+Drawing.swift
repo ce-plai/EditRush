@@ -383,11 +383,13 @@ extension TimelineCanvasView {
         guard available > 14 else { return }
         var titleWidth = available
         if rect.width > 150 {
-            let detail = TimelineFormat.shortDuration(clip.duration) as NSString
-            let size = detail.size(withAttributes: TimelinePalette.clipDetail)
+            var detail = TimelineFormat.shortDuration(clip.duration)
+            if clip.speed != 1 { detail = TimelineFormat.speed(clip.speed) + " · " + detail }
+            let detailText = detail as NSString
+            let size = detailText.size(withAttributes: TimelinePalette.clipDetail)
             let detailX = min(rect.maxX, bounds.width) - trailingInset - size.width
             if detailX - x > 60 {
-                detail.draw(at: CGPoint(x: detailX, y: rect.minY + 4), withAttributes: TimelinePalette.clipDetail)
+                detailText.draw(at: CGPoint(x: detailX, y: rect.minY + 4), withAttributes: TimelinePalette.clipDetail)
                 titleWidth = detailX - 8 - x
             }
         }
@@ -487,7 +489,7 @@ extension TimelineCanvasView {
         for i in first..<last {
             let offset = CGFloat(i) * tileWidth
             let tile = CGRect(x: rect.minX + offset, y: area.minY, width: tileWidth, height: area.height)
-            let t = media.kind == .image ? 0 : min(clip.sourceIn + Seconds((offset + tileWidth / 2) / pps), lastSourceTime)
+            let t = media.kind == .image ? 0 : min(clip.sourceIn + Seconds((offset + tileWidth / 2) / pps) * clip.speed, lastSourceTime)
             if let image = thumbnails.frame(for: media, at: t) {
                 drawImage(image, aspectFill: tile.insetBy(dx: 0.5, dy: 0), in: ctx)
             } else {
@@ -525,13 +527,13 @@ extension TimelineCanvasView {
         let rate = WaveformCache.peaksPerSecond
         let gain = min(max(clip.volume, 0), 1.5)
         let step: CGFloat = 1
-        let secondsPerStep = Seconds(step / pps)
+        let secondsPerStep = Seconds(step / pps) * clip.speed
         var amps: [CGFloat] = []
         amps.reserveCapacity(Int((x1 - x0) / step) + 2)
         var x = x0
         while x <= x1 {
             let offset = Seconds((x - rect.minX) / pps)
-            let s0 = clip.sourceIn + offset
+            let s0 = clip.sourceIn + offset * clip.speed
             var i0 = Int(s0 * rate)
             var i1 = Int(((s0 + secondsPerStep) * rate).rounded(.up))
             i0 = min(max(i0, 0), peaks.count - 1)

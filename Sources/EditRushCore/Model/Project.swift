@@ -168,6 +168,9 @@ public struct Clip: Codable, Identifiable, Hashable, Sendable {
     public var duration: Seconds
     /// Offset into the source media where playback starts (0 for images/text).
     public var sourceIn: Seconds = 0
+    /// Playback rate of the source (video/audio only): 2 = twice as fast, 0.5 = half speed.
+    /// The clip plays `duration * speed` seconds of source; audio keeps its pitch.
+    public var speed: Double = 1
 
     public var transform = ClipTransform()
     public var color = ColorAdjustments()
@@ -193,8 +196,11 @@ public struct Clip: Codable, Identifiable, Hashable, Sendable {
         self.mediaID = mediaID; self.start = start; self.duration = duration; self.sourceIn = sourceIn; self.text = text
     }
 
+    /// Slowest and fastest `speed` (10 % … 1000 %).
+    public static let speedRange: ClosedRange<Double> = 0.1...10
+
     public var end: Seconds { start + duration }
-    public var sourceOut: Seconds { sourceIn + duration }
+    public var sourceOut: Seconds { sourceIn + duration * speed }
     public var isText: Bool { text != nil }
     public func contains(_ t: Seconds) -> Bool { t >= start && t < end }
 
@@ -440,6 +446,7 @@ extension Clip {
                   text: try c.decodeIfPresent(TextStyle.self, forKey: .text))
         try c.fill(&id, .id)
         try c.fill(&sourceIn, .sourceIn)
+        try c.fill(&speed, .speed)
         try c.fill(&transform, .transform)
         try c.fill(&color, .color)
         try c.fill(&filter, .filter)

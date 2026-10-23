@@ -1219,6 +1219,107 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(store.project.tracks[3].clips.count, 1)
     }
 
+    // MARK: Speed
+
+    func testSetSpeedKeepsSourceRangeAndRipplesLaterClips() throws {
+        let (store, ids) = storeWithV1([(0, 4), (5, 2)], sourceIns: [1, 0])
+        store.setSpeed(2, for: [ids[0]])
+        var c = try XCTUnwrap(store.clip(ids[0]))
+        XCTAssertEqual(c.speed, 2)
+        XCTAssertEqual(c.duration, 2, accuracy: 1e-9)
+        XCTAssertEqual(c.sourceIn, 1); XCTAssertEqual(c.sourceOut, 5, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[1])).start, 3, accuracy: 1e-9, "later clip keeps its 1 s gap")
+
+        store.setSpeed(0.5, for: [ids[0]])
+        c = try XCTUnwrap(store.clip(ids[0]))
+        XCTAssertEqual(c.duration, 8, accuracy: 1e-9)
+        XCTAssertEqual(c.sourceOut, 5, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[1])).start, 9, accuracy: 1e-9)
+        assertInvariants(store.project)
+
+        store.undo()
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[0])).duration, 2, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[1])).start, 3, accuracy: 1e-9)
+    }
+
+    func testSetSpeedClampsAndSkipsImagesTextAndLockedTracks() throws {
+        let store = makeStore()
+        let img = try XCTUnwrap(store.addClip(mediaID: image.id, at: 0))
+        let title = try XCTUnwrap(store.addTextClip(at: 20))
+        let vid = try XCTUnwrap(store.addClip(mediaID: video.id, at: 40))
+        store.setSpeed(50, for: [img, title, vid])
+        XCTAssertEqual(store.clip(img)?.speed, 1); XCTAssertEqual(store.clip(img)?.duration, 5)
+        XCTAssertEqual(store.clip(title)?.speed, 1)
+        XCTAssertEqual(store.clip(vid)?.speed, Clip.speedRange.upperBound)
+        XCTAssertEqual(try XCTUnwrap(store.clip(vid)).duration, 1, accuracy: 1e-9, "10 s of source at 10×")
+
+        store.updateClip(img, "Speed") { $0.speed = 3 }
+        XCTAssertEqual(store.clip(img)?.speed, 1, "images have no speed")
+        store.updateClip(vid, "Speed") { $0.speed = 0.01 }
+        XCTAssertEqual(store.clip(vid)?.speed, Clip.speedRange.lowerBound)
+
+        let track = try XCTUnwrap(store.project.track(containing: vid))
+        store.setTrack(track.id, locked: true)
+        store.setSpeed(1, for: [vid])
+        XCTAssertEqual(store.clip(vid)?.speed, Clip.speedRange.lowerBound)
+        assertInvariants(store.project)
+    }
+
+    func testSpeedDragIsOneUndoStepAndDoesNotDrift() throws {
+        let (store, ids) = storeWithV1([(0, 10), (10, 2)])
+        for speed in [0.37, 1.53, 0.71, 2.9, 0.13, 1] { store.setSpeed(speed, for: [ids[0]], coalesce: "drag") }
+        store.endCoalescing()
+        let c = try XCTUnwrap(store.clip(ids[0]))
+        XCTAssertEqual(c.duration, 10, accuracy: 1e-9, "back at 100 %, the clip is its original length")
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[1])).start, 10, accuracy: 1e-9)
+        store.undo()
+        XCTAssertFalse(store.canUndo, "the whole drag is one undo step")
+
+        for speed in [0.5, 0.25] { store.setSpeed(speed, for: [ids[0]], coalesce: "drag2") }
+        store.endCoalescing()
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[0])).duration, 40, accuracy: 1e-9)
+        store.undo()
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[0])).speed, 1)
+    }
+
+    func testSplitTrimAndJoinAtSpeed() throws {
+        let (store, ids) = storeWithV1([(2, 4)], sourceIns: [1])
+        store.setSpeed(2, for: [ids[0]])
+        // Clip [2, 4) plays source 1…5.
+        let right = try XCTUnwrap(store.split(clipID: ids[0], at: 3))
+        XCTAssertEqual(try XCTUnwrap(store.clip(right)).sourceIn, 3, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(store.clip(right)).sourceOut, 5, accuracy: 1e-9)
+        store.selection = [ids[0], right]
+        XCTAssertTrue(store.canJoinSelection)
+        store.joinSelection()
+        XCTAssertEqual(try XCTUnwrap(store.clip(ids[0])).duration, 2, accuracy: 1e-9)
+
+        // Leading edge: 1 s of source before sourceIn is 0.5 s of timeline at 2×.
+        store.trimClip(ids[0], edge: .leading, to: 0)
+        var c = try XCTUnwrap(store.clip(ids[0]))
+        XCTAssertEqual(c.start, 1.5, accuracy: 1e-9); XCTAssertEqual(c.sourceIn, 0, accuracy: 1e-9)
+        // Trailing edge: the 10 s source runs out at 1.5 + 10 / 2.
+        store.trimClip(ids[0], edge: .trailing, to: 50)
+        c = try XCTUnwrap(store.clip(ids[0]))
+        XCTAssertEqual(c.end, 6.5, accuracy: 1e-9); XCTAssertEqual(c.sourceOut, 10, accuracy: 1e-9)
+        assertInvariants(store.project)
+
+        // Different speeds don't join.
+        let (s2, ids2) = storeWithV1([(0, 2), (2, 2)], sourceIns: [0, 2])
+        s2.updateClip(ids2[1], "Speed") { $0.speed = 1.5 }
+        s2.selection = Set(ids2)
+        XCTAssertFalse(s2.canJoinSelection)
+    }
+
+    func testDetachAudioKeepsSpeed() throws {
+        let (store, ids) = storeWithV1([(0, 4)])
+        store.setSpeed(0.5, for: [ids[0]])
+        store.detachAudio(ids[0])
+        let audio = try XCTUnwrap(store.project.audioTracks.first?.clips.first)
+        XCTAssertEqual(audio.speed, 0.5)
+        XCTAssertEqual(audio.duration, 8, accuracy: 1e-9)
+    }
+
     // MARK: Invariants under a random edit sequence
 
     func testRandomEditSequenceKeepsInvariants() {
@@ -1236,7 +1337,10 @@ final class StoreTests: XCTestCase {
             let clips = store.project.tracks.flatMap(\.clips)
             let any = clips.randomElement(using: &rng)
             let canGrow = clips.count < 80
-            switch Int.random(in: 0..<20, using: &rng) {
+            switch Int.random(in: 0..<21, using: &rng) {
+            case 20:
+                store.setSpeed(pow(10, .random(in: -1.2...1.2, using: &rng)), for: randomSelection(clips),
+                               coalesce: Bool.random(using: &rng) ? "speed" : nil)
             case 18:
                 store.moveClips(randomSelection(clips), by: .random(in: -20...20, using: &rng),
                                 trackOffset: .random(in: -2...2, using: &rng))

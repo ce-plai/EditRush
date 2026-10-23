@@ -46,13 +46,14 @@ enum InspectorClipKind {
 
 /// Property pages for a single clip.
 enum InspectorTab: String, CaseIterable, Identifiable {
-    case text, transform, fades, color, filters, audio
+    case text, transform, speed, fades, color, filters, audio
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .text: "Text"
         case .transform: "Transform"
+        case .speed: "Speed"
         case .fades: "Fades"
         case .color: "Color"
         case .filters: "Filters"
@@ -64,6 +65,7 @@ enum InspectorTab: String, CaseIterable, Identifiable {
         switch self {
         case .text: "textformat"
         case .transform: "arrow.up.left.and.arrow.down.right"
+        case .speed: "speedometer"
         case .fades: "circle.righthalf.filled"
         case .color: "camera.aperture"
         case .filters: "camera.filters"
@@ -75,8 +77,10 @@ enum InspectorTab: String, CaseIterable, Identifiable {
         switch kind {
         case .text: return [.text, .transform, .fades]
         case .image: return [.transform, .fades, .color, .filters]
-        case .audio: return [.audio, .fades]
-        case .video: return [.transform, .fades, .color, .filters] + ((media?.hasAudio ?? false) ? [.audio] : [])
+        case .audio: return [.audio, .speed, .fades]
+        case .video:
+            let speed: [InspectorTab] = media?.kind == .video ? [.speed] : []
+            return [.transform] + speed + [.fades, .color, .filters] + ((media?.hasAudio ?? false) ? [.audio] : [])
         }
     }
 }
@@ -119,6 +123,7 @@ struct ClipInspector: View {
         switch tab {
         case .text: TextInspectorPage(clip: clip)
         case .transform: TransformInspectorPage(clip: clip, kind: kind)
+        case .speed: SpeedInspectorPage(clip: clip)
         case .fades: FadesInspectorPage(clip: clip, kind: kind)
         case .color: ColorInspectorPage(clip: clip)
         case .filters: FilterInspectorPage(clip: clip, media: media)

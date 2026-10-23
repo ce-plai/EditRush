@@ -54,6 +54,19 @@ struct MultiSelectionInspector: View {
                         store.setFades(in: nil, out: $0)
                     }
                 }
+                let timed = clips.filter { !$0.isText && store.media($0.mediaID).map { $0.kind != .image } ?? false }
+                if !timed.isEmpty {
+                    let speeds = timed.map(\.speed)
+                    InspectorSection("Speed") {
+                        InspectorSpeedControls(speed: speeds.first ?? 1, detail: Self.isMixed(speeds) ? "Mixed" : nil,
+                                               coalesceKey: "inspector-speed-selection") { speed, key in
+                            store.setSpeed(speed, for: Set(timed.map(\.id)), coalesce: key)
+                        }
+                        if timed.count < clips.count {
+                            InspectorCaption(text: "Applies to the selected video and audio clips; images and titles keep their length.")
+                        }
+                    }
+                }
                 InspectorSection("Actions") {
                     HStack(spacing: 6) {
                         Button { store.duplicateSelection() } label: {

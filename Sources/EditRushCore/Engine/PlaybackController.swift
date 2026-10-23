@@ -203,6 +203,8 @@ public final class PlaybackController {
         resume = max(0, min(resume, result.duration))
 
         let item = AVPlayerItem(asset: result.composition)
+        // Sped-up and slowed-down clips keep their pitch.
+        item.audioTimePitchAlgorithm = .spectral
         item.videoComposition = result.videoComposition
         item.audioMix = result.audioMix
         observe(item)

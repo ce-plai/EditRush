@@ -114,6 +114,13 @@ public final class EditorStore {
     /// Ends any in-progress coalescing so the next `mutate` records a fresh undo step.
     public func endCoalescing() { lastCoalesceKey = nil }
 
+    /// The project before the coalesced action that `key` would continue (the current project when
+    /// it starts a new one), so a live drag can recompute each step from where the gesture began.
+    func coalescingBase(_ key: String?) -> Project {
+        guard let key, key == lastCoalesceKey, let base = undoStack.last?.project else { return project }
+        return base
+    }
+
     public func undo() {
         guard let step = undoStack.popLast() else { return }
         redoStack.append((step.name, project))

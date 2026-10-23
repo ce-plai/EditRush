@@ -82,12 +82,14 @@ enum StoreTimeline {
         c.duration = c.duration.isFinite ? max(frame, canvas.quantize(c.duration)) : frame
         if playsSourceRange(c, in: p) {
             c.sourceIn = c.sourceIn.isFinite ? max(0, c.sourceIn) : 0
+            c.speed = clamp(c.speed, Clip.speedRange, default: 1)
             if let total = sourceDuration(of: c, in: p) {
-                c.sourceIn = min(c.sourceIn, max(0, total - frame))
-                c.duration = max(frame, min(c.duration, floorFrame(total - c.sourceIn, canvas)))
+                c.sourceIn = min(c.sourceIn, max(0, total - frame * c.speed))
+                c.duration = max(frame, min(c.duration, floorFrame((total - c.sourceIn) / c.speed, canvas)))
             }
         } else {
             c.sourceIn = 0
+            c.speed = 1
         }
 
         c.transform.opacity = clamp(c.transform.opacity, 0...1, default: 1)
@@ -248,7 +250,7 @@ enum StoreTimeline {
         right.id = UUID()
         right.start = t
         right.duration = canvas.quantize(original.end - t)
-        if playsSourceRange(original, in: p) { right.sourceIn = original.sourceIn + left.duration }
+        if playsSourceRange(original, in: p) { right.sourceIn = original.sourceIn + left.duration * original.speed }
         right.fadeIn = 0
         clampFades(&right)
 
@@ -257,13 +259,13 @@ enum StoreTimeline {
         return right.id
     }
 
-    /// True when `b` continues `a` seamlessly: same media and continuous source range
+    /// True when `b` continues `a` seamlessly: same media and speed with a continuous source range
     /// (images and identical text styles are always continuous).
     static func continues(_ a: Clip, _ b: Clip, in p: Project, frame: Seconds) -> Bool {
         guard abs(a.end - b.start) < frame / 2 else { return false }
         if let ta = a.text { return a.mediaID == nil && b.mediaID == nil && b.text == ta }
         guard b.text == nil, let mid = a.mediaID, mid == b.mediaID else { return false }
         if !playsSourceRange(a, in: p) { return true }
-        return abs(a.sourceOut - b.sourceIn) < frame / 2
+        return abs(a.speed - b.speed) < 1e-9 && abs(a.sourceOut - b.sourceIn) < frame * a.speed / 2
     }
 }

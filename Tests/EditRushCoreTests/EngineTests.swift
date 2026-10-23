@@ -893,6 +893,44 @@ final class EngineTests: XCTestCase {
         assertColor(try await render(p, at: 3.5).rgb(fx: 0.5, fy: 0.5), 255, 0, 0, "next clip follows")
     }
 
+    // MARK: - Speed
+
+    func testSpeedPlaysSourceFasterAndSlower() async throws {
+        let source = try await media("red_then_blue.mp4") // 3 s red, then 3 s blue
+        var p = makeProject([source])
+        var fast = Clip(mediaID: source.id, start: 0, duration: 3)
+        fast.speed = 2 // plays source 0…6
+        var slow = Clip(mediaID: source.id, start: 3, duration: 4, sourceIn: 2)
+        slow.speed = 0.5 // plays source 2…4
+        p.tracks[0].clips = [fast, slow]
+        let built = try await CompositionBuilder.build(project: p, assets: .shared)
+        XCTAssertEqual(built.duration, 7, accuracy: 1e-6)
+
+        assertColor(try await render(p, at: 1).rgb(fx: 0.5, fy: 0.5), 255, 0, 0, "2×: 1 s in shows source 2 s")
+        assertColor(try await render(p, at: 2).rgb(fx: 0.5, fy: 0.5), 0, 0, 255, "2×: 2 s in shows source 4 s")
+        assertColor(try await render(p, at: 3.5).rgb(fx: 0.5, fy: 0.5), 255, 0, 0, "½×: shows source 2.25 s")
+        assertColor(try await render(p, at: 6.5).rgb(fx: 0.5, fy: 0.5), 0, 0, 255, "½×: shows source 3.75 s")
+    }
+
+    func testSpeedScalesAudioWithVideo() async throws {
+        let clip = try await media("clip_a.mp4")
+        var p = makeProject([clip])
+        var c = Clip(mediaID: clip.id, start: 1, duration: 3)
+        c.speed = 2
+        p.tracks[0].clips = [c]
+        let built = try await CompositionBuilder.build(project: p, assets: .shared)
+        XCTAssertEqual(built.duration, 4, accuracy: 1e-6)
+        for type in [AVMediaType.video, .audio] {
+            let tracks = try await built.composition.loadTracks(withMediaType: type)
+            let track = try XCTUnwrap(tracks.last, "\(type)")
+            let segments = try await track.load(.segments).filter { !$0.isEmpty }
+            let segment = try XCTUnwrap(segments.last, "\(type)")
+            XCTAssertEqual(segment.timeMapping.target.start.seconds, 1, accuracy: 0.01, "\(type)")
+            XCTAssertEqual(segment.timeMapping.target.duration.seconds, 3, accuracy: 0.01, "\(type)")
+            XCTAssertEqual(segment.timeMapping.source.duration.seconds, 6, accuracy: 0.05, "\(type)")
+        }
+    }
+
     // MARK: - Titles at output resolution
 
     func testTitlesRasterizeAtDisplayResolution() async throws {

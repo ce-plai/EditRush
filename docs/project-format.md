@@ -146,10 +146,11 @@ A clip has either a `mediaID` (video / audio / image) or a `text` style (title),
 | Field | Default | Valid range / notes |
 |---|---|---|
 | `start` | **required** | Timeline position, ≥ 0. |
-| `duration` | **required** | Timeline length, ≥ 1 frame. For video / audio it is cut to what the media has left after `sourceIn`. |
+| `duration` | **required** | Timeline length, ≥ 1 frame. For video / audio it is cut to what the media has left after `sourceIn` (at the clip's `speed`). |
 | `mediaID` | – | A `media` id. |
 | `text` | – | Text style; makes this a title clip. |
 | `sourceIn` | 0 | Seconds into the source where the clip starts (video / audio only). |
+| `speed` | 1 | 0.1…10 playback rate (video / audio only): 2 plays twice as fast, 0.5 half speed. The clip plays `duration × speed` seconds of source; audio keeps its pitch. |
 | `transform` | identity | See Transform. |
 | `color` | identity | See Colour. |
 | `filter` | `none` | `none vivid warm cool mono noir sepia chrome fade instant process tonal transfer blur sharpen comic` |

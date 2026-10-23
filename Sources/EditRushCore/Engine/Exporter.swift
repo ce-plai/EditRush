@@ -108,6 +108,7 @@ public final class Exporter {
         }
         session.videoComposition = built.videoComposition
         session.audioMix = built.audioMix
+        session.audioTimePitchAlgorithm = .spectral
         session.shouldOptimizeForNetworkUse = settings.container == .mp4
 
         // Write next to the destination and swap it in only on success, so a failed, cancelled or

@@ -189,19 +189,25 @@ public enum CompositionBuilder {
     /// a clip that runs past the end of the source keeps showing its last frame until the clip ends.
     private static func segment(for clip: Clip, media: MediaItem, available: CMTimeRange,
                                 holdLastFrame: Bool) -> CompositionPlan.Segment? {
+        let speed = clip.speed.isFinite && clip.speed > 0 ? clip.speed : 1
         var at = ticks(clip.start)
         let end = ticks(clip.end)
         var source = ticks(clip.sourceIn)
         let availableStart = Int64((available.start.seconds * Double(timescale)).rounded(.up))
         let availableEnd = Int64((available.end.seconds * Double(timescale)).rounded(.down))
         if source < availableStart {
-            at += availableStart - source
+            at += Int64((Double(availableStart - source) / speed).rounded(.up))
             source = availableStart
         }
-        let length = min(end - at, availableEnd - source)
+        guard end > at else { return nil }
+        let wanted = Int64((Double(end - at) * speed).rounded())
+        let sourceLength = min(wanted, availableEnd - source)
+        guard sourceLength > 0 else { return nil }
+        let length = sourceLength == wanted ? end - at : min(end - at, Int64((Double(sourceLength) / speed).rounded()))
         guard length > 0 else { return nil }
         let hold = holdLastFrame ? max(0, end - at - length) : 0
-        return .init(clipID: clip.id, mediaID: media.id, url: media.url, source: source, at: at, length: length, hold: hold)
+        return .init(clipID: clip.id, mediaID: media.id, url: media.url, source: source, sourceLength: sourceLength,
+                     at: at, length: length, hold: hold)
     }
 
     // MARK: - Composition
@@ -229,11 +235,15 @@ public enum CompositionBuilder {
             for s in trackPlan.segments {
                 guard let asset = loaded[s.mediaID],
                       let sourceTrack = trackPlan.isVideo ? asset.videoTrack : asset.audioTrack else { continue }
-                try track.insertTimeRange(CMTimeRange(start: time(s.source), duration: time(s.length)),
+                try track.insertTimeRange(CMTimeRange(start: time(s.source), duration: time(s.sourceLength)),
                                           of: sourceTrack, at: time(s.at))
+                if s.sourceLength != s.length {
+                    // Speed change: play the source range over the clip's timeline length.
+                    track.scaleTimeRange(CMTimeRange(start: time(s.at), duration: time(s.sourceLength)), toDuration: time(s.length))
+                }
                 if s.hold > 0 {
                     // Stretch the last source frame over the rest of the clip.
-                    let sourceEnd = time(s.source + s.length)
+                    let sourceEnd = time(s.source + s.sourceLength)
                     let frameStart = CMTimeMaximum(time(s.source), CMTimeSubtract(sourceEnd, asset.videoFrameDuration))
                     let frame = CMTimeRange(start: frameStart, end: sourceEnd)
                     let holdAt = time(s.at + s.length)
@@ -392,8 +402,10 @@ struct CompositionPlan: Hashable {
         let clipID: UUID
         let mediaID: UUID
         let url: URL
-        /// Source start, timeline position and inserted length, in `CompositionBuilder.timescale` ticks.
+        /// Source start and length, timeline position and timeline length, in
+        /// `CompositionBuilder.timescale` ticks. The lengths differ when the clip's speed isn't 1.
         let source: Int64
+        let sourceLength: Int64
         let at: Int64
         let length: Int64
         /// Video only: ticks after `at + length` the last source frame is held for.
