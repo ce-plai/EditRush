@@ -41,7 +41,7 @@ sign --preserve-metadata=entitlements "$FW/Versions/B/XPCServices/Downloader.xpc
 sign "$FW/Versions/B/Autoupdate"
 sign "$FW/Versions/B/Updater.app"
 sign "$FW"
-sign "$APP"
+sign --entitlements Resources/EditRush.entitlements "$APP"
 codesign --verify --strict --deep "$APP"
 
 echo "==> Making DMG"

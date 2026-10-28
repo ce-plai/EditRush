@@ -34,6 +34,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key><string>EditRush uses the microphone to record voiceovers onto your timeline.</string>
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
@@ -75,5 +76,5 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+codesign --force --sign - --entitlements Resources/EditRush.entitlements "$APP" >/dev/null 2>&1 || true
 echo "Built $APP"

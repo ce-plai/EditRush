@@ -7,11 +7,13 @@ struct TimelineView: View {
     @Environment(PlaybackController.self) private var playback
     @Environment(ThumbnailCache.self) private var thumbnails
     @Environment(WaveformCache.self) private var waveforms
+    @Environment(VoiceoverRecorder.self) private var recorder
 
     var body: some View {
         VStack(spacing: 0) {
             TimelineToolbar()
-            TimelineBodyRepresentable(store: store, playback: playback, thumbnails: thumbnails, waveforms: waveforms)
+            TimelineBodyRepresentable(store: store, playback: playback, thumbnails: thumbnails, waveforms: waveforms,
+                                      recorder: recorder)
         }
         .background(Theme.panelBackground)
     }

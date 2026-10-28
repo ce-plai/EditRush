@@ -56,7 +56,7 @@ private struct PreviewPlayPauseButton: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button { playback.togglePlay() } label: {
+        Button(action: ShellActions.togglePlay) {
             Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
                 .font(.system(size: 15, weight: .semibold))
                 .offset(x: playback.isPlaying ? 0 : 1.5)

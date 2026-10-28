@@ -51,6 +51,7 @@ private struct PreviewStage: View {
         }
         .clipped()
         .overlay(alignment: .top) { PreviewErrorBadge().padding(.top, 8) }
+        .overlay { VoiceoverOverlay() }
         .overlay {
             if isDropTargeted && !isEmpty {
                 RoundedRectangle(cornerRadius: 8)

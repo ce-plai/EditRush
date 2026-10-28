@@ -16,6 +16,7 @@ final class TimelineCanvasView: NSView {
     let thumbnails: ThumbnailCache
     let waveforms: WaveformCache
     let shared: TimelineSharedState
+    let recorder: VoiceoverRecorder
 
     /// Horizontal scroll offset in points (content x at the left edge of the view).
     var scrollX: CGFloat = 0
@@ -46,12 +47,13 @@ final class TimelineCanvasView: NSView {
     private var trackingArea: NSTrackingArea?
 
     init(store: EditorStore, playback: PlaybackController, thumbnails: ThumbnailCache,
-         waveforms: WaveformCache, shared: TimelineSharedState) {
+         waveforms: WaveformCache, shared: TimelineSharedState, recorder: VoiceoverRecorder) {
         self.store = store
         self.playback = playback
         self.thumbnails = thumbnails
         self.waveforms = waveforms
         self.shared = shared
+        self.recorder = recorder
         self.appliedPPS = store.pixelsPerSecond
         super.init(frame: .zero)
         wantsLayer = true

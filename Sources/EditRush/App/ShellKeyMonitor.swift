@@ -72,6 +72,8 @@ final class ShellKeyMonitor {
             return shift ? nil : Shortcut(action: ShellActions.goToEnd)
         case 51, 117: // ⌫, ⌦
             return Shortcut { ShellActions.delete(ripple: shift) }
+        case 53 where AppEnvironment.shared.recorder.isActive: // Esc
+            return Shortcut { _ = ShellActions.stopVoiceover() }
         default:
             break
         }

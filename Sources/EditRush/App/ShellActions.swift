@@ -13,6 +13,7 @@ enum ShellActions {
     private static var env: AppEnvironment { .shared }
     private static var store: EditorStore { env.store }
     private static var playback: PlaybackController { env.playback }
+    private static var recorder: VoiceoverRecorder { env.recorder }
 
     // MARK: File
 
@@ -93,6 +94,8 @@ enum ShellActions {
     }
 
     static func addTitle() { store.addTextClip() }
+    /// Starts a voiceover on a free audio track, or stops the one in progress.
+    static func toggleVoiceover() { recorder.toggle() }
     static func fadeIn() { store.setFades(in: 1, out: nil) }
     static func fadeOut() { store.setFades(in: nil, out: 1) }
     static func removeFades() { store.setFades(in: 0, out: 0) }
@@ -114,9 +117,17 @@ enum ShellActions {
 
     // MARK: Playback
 
-    static func togglePlay() { playback.togglePlay() }
-    static func play() { playback.play() }
-    static func pause() { playback.pause() }
+    // While a voiceover is counting down or recording, play / pause end it instead.
+
+    static func togglePlay() { recorder.isActive ? recorder.stop() : playback.togglePlay() }
+    static func play() { if !recorder.isActive { playback.play() } }
+    static func pause() { recorder.isActive ? recorder.stop() : playback.pause() }
+    /// Esc: ends a voiceover (cancels during the countdown). Returns false when none is in progress.
+    static func stopVoiceover() -> Bool {
+        guard recorder.isActive else { return false }
+        recorder.stop()
+        return true
+    }
 
     static func stepFrames(_ n: Int) {
         playback.stepFrames(n)

@@ -1320,6 +1320,69 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(audio.duration, 8, accuracy: 1e-9)
     }
 
+    // MARK: Voiceover
+
+    private func voiceover(_ duration: Seconds) -> MediaItem {
+        MediaItem(url: tempDir.appendingPathComponent("Voiceover \(UUID().uuidString).m4a"), name: "Voiceover", kind: .audio,
+                  duration: duration, hasAudio: true)
+    }
+
+    func testRecordingLandsOnRequestedTrackAtStartAsOneUndoStep() {
+        let store = makeStore()
+        let a2 = store.project.audioTracks[1].id
+        let take = voiceover(3.25)
+        let id = store.addRecording(take, trackID: a2, at: 2.01)
+        let clip = try! XCTUnwrap(id.flatMap(store.clip))
+        XCTAssertEqual(store.project.track(containing: clip.id)?.id, a2)
+        XCTAssertEqual(clip.start, 2, accuracy: 1e-9)
+        XCTAssertEqual(clip.duration, 3.233333, accuracy: 1e-5)
+        XCTAssertEqual(store.selection, [clip.id])
+        XCTAssertNotNil(store.media(take.id))
+        XCTAssertEqual(store.undoActionName, "Record Voiceover")
+        store.undo()
+        XCTAssertNil(store.media(take.id))
+        XCTAssertTrue(store.project.tracks.allSatisfy { $0.clips.isEmpty })
+        assertInvariants(store.project)
+    }
+
+    func testRecordingNeverMovesInTimeWhenItsTrackIsTaken() {
+        let store = makeStore()
+        let a1 = store.project.audioTracks[0].id
+        store.addClip(mediaID: audio.id, trackID: a1, at: 4)      // A1 busy 4…12
+        let id = store.addRecording(voiceover(2), trackID: a1, at: 3)
+        let clip = try! XCTUnwrap(id.flatMap(store.clip))
+        XCTAssertEqual(clip.start, 3, accuracy: 1e-9)
+        XCTAssertEqual(store.project.track(containing: clip.id)?.id, store.project.audioTracks[1].id)
+
+        store.setTrack(store.project.audioTracks[1].id, locked: true)
+        let next = try! XCTUnwrap(store.addRecording(voiceover(2), trackID: store.project.audioTracks[1].id, at: 3).flatMap(store.clip))
+        XCTAssertEqual(next.start, 3, accuracy: 1e-9)
+        XCTAssertEqual(store.project.audioTracks.count, 3, "a new track when every audio track is taken or locked")
+        XCTAssertEqual(store.project.track(containing: next.id)?.id, store.project.audioTracks[2].id)
+        assertInvariants(store.project)
+    }
+
+    func testRecordingWithNoTrackOrNoLengthIsRejectedOrPlacedAutomatically() {
+        let store = makeStore()
+        XCTAssertNil(store.addRecording(voiceover(0), trackID: nil, at: 0))
+        XCTAssertNil(store.addRecording(video, trackID: nil, at: 0))
+        let id = store.addRecording(voiceover(1), trackID: UUID(), at: 1)
+        XCTAssertEqual(id.flatMap { store.project.track(containing: $0)?.id }, store.project.audioTracks[0].id)
+    }
+
+    func testVoiceoverFilesNumberFromOneNextToTheProject() throws {
+        let project = tempDir.appendingPathComponent("Trip.editrush")
+        let folder = VoiceoverFiles.folder(forProject: project)
+        XCTAssertEqual(folder.lastPathComponent, "Voiceovers")
+        XCTAssertEqual(folder.deletingLastPathComponent().standardizedFileURL, tempDir.standardizedFileURL)
+        XCTAssertEqual(VoiceoverFiles.folder(forProject: nil), VoiceoverFiles.defaultFolder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        XCTAssertEqual(VoiceoverFiles.nextURL(in: folder).lastPathComponent, "Voiceover 1.m4a")
+        try Data().write(to: folder.appendingPathComponent("Voiceover 1.m4a"))
+        try Data().write(to: folder.appendingPathComponent("Voiceover 3.m4a"))
+        XCTAssertEqual(VoiceoverFiles.nextURL(in: folder).lastPathComponent, "Voiceover 2.m4a")
+    }
+
     // MARK: Invariants under a random edit sequence
 
     func testRandomEditSequenceKeepsInvariants() {

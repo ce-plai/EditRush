@@ -124,6 +124,7 @@ extension TimelineCanvasView {
             ctx.fill(CGRect(x: max(0, endX), y: rulerHeight, width: bounds.width - max(0, endX), height: trackArea.height))
         }
         drawClips(in: ctx, project: project, visible: visible)
+        drawVoiceoverTake(in: ctx)
         if let preview = dropPreview { drawDropPreview(preview, in: ctx) }
         if project.tracks.allSatisfy({ $0.clips.isEmpty }), dropPreview == nil { drawEmptyHint(in: ctx, area: trackArea) }
         if case .marquee(let mq) = drag {
@@ -552,6 +553,29 @@ extension TimelineCanvasView {
         ctx.setFillColor(color)
         ctx.addPath(path)
         ctx.fillPath()
+    }
+
+    // MARK: - Voiceover
+
+    /// The take being recorded, growing from where it started on its track.
+    private func drawVoiceoverTake(in ctx: CGContext) {
+        guard recorder.phase == .recording || recorder.phase == .finishing,
+              let id = recorder.trackID, let row = rows.row(for: id) else { return }
+        let x0 = x(for: recorder.startTime), x1 = x(for: recorder.startTime + recorder.elapsed)
+        let r = CGRect(x: x0, y: viewY(row.y) + TimelineMetrics.clipInset,
+                       width: max(4, x1 - x0), height: row.height - 2 * TimelineMetrics.clipInset)
+        let path = CGPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), cornerWidth: Theme.cornerRadius,
+                          cornerHeight: Theme.cornerRadius, transform: nil)
+        ctx.setFillColor(TimelinePalette.cg(Theme.playhead, alpha: 0.28))
+        ctx.addPath(path)
+        ctx.fillPath()
+        ctx.setStrokeColor(TimelinePalette.playhead)
+        ctx.setLineWidth(1.5)
+        ctx.addPath(path)
+        ctx.strokePath()
+        let title = recorder.phase == .finishing ? "Saving…" : "Recording " + VoiceoverRecorder.format(recorder.elapsed)
+        (title as NSString).draw(in: CGRect(x: r.minX + 7, y: r.minY + 3, width: max(0, r.width - 12), height: 15),
+                                 withAttributes: TimelinePalette.clipLabel)
     }
 
     // MARK: - Drop preview

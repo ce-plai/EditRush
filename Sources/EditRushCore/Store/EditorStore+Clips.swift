@@ -27,6 +27,28 @@ extension EditorStore {
         return clip.id
     }
 
+    /// Adds a recorded voiceover to the bin and places it at `start` as one undo step ("Record Voiceover").
+    /// It goes on `trackID` when that audio track is unlocked and free for the whole take; otherwise on the
+    /// first free visible, unlocked audio track (a new one if none is), so the take never moves in time.
+    /// Selects the new clip and returns its id.
+    @discardableResult
+    public func addRecording(_ item: MediaItem, trackID: UUID?, at start: Seconds) -> UUID? {
+        guard item.kind == .audio, item.duration > 0 else { return nil }
+        let canvas = project.canvas
+        var clip = Clip(mediaID: item.id, start: canvas.quantize(max(0, start)),
+                        duration: max(canvas.frameDuration, StoreTimeline.floorFrame(item.duration, canvas)))
+        mutate("Record Voiceover") { p in
+            if !p.media.contains(where: { $0.id == item.id }) { p.media.append(item) }
+            let target = p.tracks.first { $0.id == trackID }
+            let preferred = target.flatMap { t in
+                t.kind == .audio && !t.isLocked && t.isFree(start: clip.start, duration: clip.duration) ? t.id : nil
+            }
+            StoreTimeline.place(&clip, kind: .audio, preferredTrack: preferred, topmostFirst: false, in: &p)
+        }
+        selection = [clip.id]
+        return clip.id
+    }
+
     /// Adds a 5 s text clip (default `TextStyle`) at `time` (nil = playhead) on `trackID`
     /// (nil = topmost visible, unlocked video track that is free there, creating a new video track if needed).
     @discardableResult

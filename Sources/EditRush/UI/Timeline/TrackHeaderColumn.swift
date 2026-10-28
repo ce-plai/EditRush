@@ -6,12 +6,13 @@ import EditRushCore
 struct TrackHeaderColumn: View {
     let store: EditorStore
     let shared: TimelineSharedState
+    let recorder: VoiceoverRecorder
 
     var body: some View {
         VStack(spacing: 0) {
             TrackHeaderCorner(store: store)
                 .frame(height: Theme.rulerHeight)
-            TrackHeaderRows(store: store, shared: shared)
+            TrackHeaderRows(store: store, shared: shared, recorder: recorder)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipped()
         }
@@ -24,6 +25,7 @@ struct TrackHeaderColumn: View {
 private struct TrackHeaderRows: View {
     let store: EditorStore
     let shared: TimelineSharedState
+    let recorder: VoiceoverRecorder
 
     var body: some View {
         let layout = shared.layout
@@ -37,7 +39,7 @@ private struct TrackHeaderRows: View {
     private func rows(_ layout: TimelineLayout) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(layout.rows) { row in
-                TrackHeaderRow(row: row, store: store)
+                TrackHeaderRow(row: row, store: store, recorder: recorder)
                     .frame(width: Theme.trackHeaderWidth, height: row.height)
                     .offset(y: row.y)
             }
@@ -87,6 +89,10 @@ private struct TrackHeaderCorner: View {
 private struct TrackHeaderRow: View {
     let row: TimelineRow
     let store: EditorStore
+    let recorder: VoiceoverRecorder
+
+    /// True while a voiceover is counting down or recording onto this track.
+    private var isRecordingHere: Bool { recorder.isActive && recorder.trackID == row.trackID }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -119,6 +125,14 @@ private struct TrackHeaderRow: View {
                                       tint: Theme.selection, help: row.isLocked ? "Unlock Track" : "Lock Track") {
                         store.setTrack(row.trackID, locked: !row.isLocked)
                     }
+                    if row.kind == .audio {
+                        TrackToggleButton(icon: isRecordingHere ? "stop.circle.fill" : "mic.fill", isOn: isRecordingHere,
+                                          tint: Theme.playhead,
+                                          help: recorder.isActive ? "Stop Recording" : "Record Voiceover onto \(row.name)") {
+                            recorder.toggle(on: row.trackID)
+                        }
+                        .disabled(row.isLocked && !recorder.isActive)
+                    }
                 }
             }
             .padding(.leading, 7)
@@ -134,6 +148,10 @@ private struct TrackHeaderRow: View {
             }
             Button(row.isMuted ? "Unmute Track" : "Mute Track") { store.setTrack(row.trackID, muted: !row.isMuted) }
             Button(row.isLocked ? "Unlock Track" : "Lock Track") { store.setTrack(row.trackID, locked: !row.isLocked) }
+            if row.kind == .audio {
+                Button(recorder.isActive ? "Stop Recording" : "Record Voiceover Here") { recorder.toggle(on: row.trackID) }
+                    .disabled(row.isLocked && !recorder.isActive)
+            }
             Divider()
             Button("Add Video Track") { store.addTrack(.video) }
             Button("Add Audio Track") { store.addTrack(.audio) }

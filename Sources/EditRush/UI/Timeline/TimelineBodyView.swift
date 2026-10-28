@@ -8,9 +8,10 @@ struct TimelineBodyRepresentable: NSViewRepresentable {
     let playback: PlaybackController
     let thumbnails: ThumbnailCache
     let waveforms: WaveformCache
+    let recorder: VoiceoverRecorder
 
     func makeNSView(context: Context) -> TimelineBodyView {
-        TimelineBodyView(store: store, playback: playback, thumbnails: thumbnails, waveforms: waveforms)
+        TimelineBodyView(store: store, playback: playback, thumbnails: thumbnails, waveforms: waveforms, recorder: recorder)
     }
 
     func updateNSView(_ nsView: TimelineBodyView, context: Context) {}
@@ -23,11 +24,12 @@ final class TimelineBodyView: NSView {
     private let headers: TimelineHeaderHostingView
     private let separator = NSBox()
 
-    init(store: EditorStore, playback: PlaybackController, thumbnails: ThumbnailCache, waveforms: WaveformCache) {
+    init(store: EditorStore, playback: PlaybackController, thumbnails: ThumbnailCache, waveforms: WaveformCache,
+         recorder: VoiceoverRecorder) {
         let shared = TimelineSharedState()
         canvas = TimelineCanvasView(store: store, playback: playback, thumbnails: thumbnails,
-                                    waveforms: waveforms, shared: shared)
-        headers = TimelineHeaderHostingView(rootView: TrackHeaderColumn(store: store, shared: shared))
+                                    waveforms: waveforms, shared: shared, recorder: recorder)
+        headers = TimelineHeaderHostingView(rootView: TrackHeaderColumn(store: store, shared: shared, recorder: recorder))
         headers.sizingOptions = []
         headers.canvas = canvas
         super.init(frame: .zero)

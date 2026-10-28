@@ -8,6 +8,8 @@ final class AppEnvironment {
     let store: EditorStore
     let playback: PlaybackController
     let exporter: Exporter
+    /// Voiceover recording onto audio tracks.
+    let recorder: VoiceoverRecorder
     /// Window-level UI state owned by the app shell (sheets, export session).
     let shell: ShellState
     /// New / Open / Save / autosave flows.
@@ -21,6 +23,7 @@ final class AppEnvironment {
         store = EditorStore()
         playback = PlaybackController(store: store)
         exporter = Exporter()
+        recorder = VoiceoverRecorder(store: store, playback: playback)
         shell = ShellState()
         documents = ShellDocumentController(store: store, playback: playback)
         responder = ShellResponderTracker()
@@ -48,6 +51,7 @@ extension View {
         return self.environment(env.store)
             .environment(env.playback)
             .environment(env.exporter)
+            .environment(env.recorder)
             .environment(env.shell)
             .environment(ThumbnailCache.shared)
             .environment(WaveformCache.shared)

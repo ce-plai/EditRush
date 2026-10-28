@@ -18,7 +18,7 @@ struct ShellCommands: Commands {
         CommandGroup(replacing: .importExport) {}
         CommandGroup(replacing: .undoRedo) { UndoRedoMenuItems(store: env.store, responder: env.responder) }
         CommandGroup(replacing: .pasteboard) { PasteboardMenuItems(store: env.store, responder: env.responder) }
-        CommandMenu("Clip") { ClipMenuItems(store: env.store) }
+        CommandMenu("Clip") { ClipMenuItems(store: env.store, recorder: env.recorder) }
         CommandGroup(before: .toolbar) { ViewMenuItems(store: env.store) }
         CommandMenu("Playback") { PlaybackMenuItems(store: env.store, playback: env.playback) }
     }
@@ -79,6 +79,7 @@ private struct PasteboardMenuItems: View {
 
 private struct ClipMenuItems: View {
     let store: EditorStore
+    @Bindable var recorder: VoiceoverRecorder
 
     var body: some View {
         let hasClips = store.project.duration > 0
@@ -89,6 +90,10 @@ private struct ClipMenuItems: View {
         Button("Detach Audio", action: ShellActions.detachAudio).disabled(ShellActions.detachableClipIDs.isEmpty)
         Divider()
         Button("Add Title", action: ShellActions.addTitle).keyboardShortcut("t")
+        Button(recorder.isActive ? "Stop Recording" : "Record Voiceover", action: ShellActions.toggleVoiceover)
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+        VoiceoverMicrophonePicker(recorder: recorder)
+        Toggle("Mute Timeline While Recording", isOn: $recorder.mutesTimeline)
         Divider()
         Button("Fade In 1s", action: ShellActions.fadeIn).disabled(noSelection)
         Button("Fade Out 1s", action: ShellActions.fadeOut).disabled(noSelection)
@@ -133,5 +138,20 @@ private struct PlaybackMenuItems: View {
         Divider()
         Button("Nudge Left") { ShellActions.nudge(frames: -1) }.keyboardShortcut(",", modifiers: []).disabled(!hasSelection)
         Button("Nudge Right") { ShellActions.nudge(frames: 1) }.keyboardShortcut(".", modifiers: []).disabled(!hasSelection)
+    }
+}
+
+/// Microphone choice for voiceovers (a submenu with a checkmark on the current one).
+struct VoiceoverMicrophonePicker: View {
+    @Bindable var recorder: VoiceoverRecorder
+
+    var body: some View {
+        Picker("Microphone", selection: $recorder.microphoneID) {
+            Text("System Default").tag(String?.none)
+            ForEach(recorder.microphones, id: \.id) { mic in
+                Text(mic.name).tag(Optional(mic.id))
+            }
+        }
+        .disabled(recorder.isActive)
     }
 }

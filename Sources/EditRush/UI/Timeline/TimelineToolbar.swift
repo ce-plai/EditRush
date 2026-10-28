@@ -37,6 +37,8 @@ struct TimelineToolbar: View {
             }
             fadeButton(fadeIn: true)
             fadeButton(fadeIn: false)
+            ToolbarDivider()
+            VoiceoverToolButton()
             Spacer(minLength: 12)
             TimelineToolButton(help: store.snappingEnabled ? "Snapping On" : "Snapping Off", isOn: store.snappingEnabled) {
                 store.snappingEnabled.toggle()
@@ -99,6 +101,25 @@ private struct TimelineTimecode: View {
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .fixedSize()
         .help("Playhead / Duration (HH:MM:SS:FF at \(Int(fps.rounded())) fps)")
+    }
+}
+
+/// Record Voiceover: records onto a free audio track from the playhead. Right-click picks the microphone.
+private struct VoiceoverToolButton: View {
+    @Environment(VoiceoverRecorder.self) private var recorder
+
+    var body: some View {
+        @Bindable var recorder = recorder
+        TimelineToolButton(help: recorder.isActive ? "Stop Recording (Space)" : "Record Voiceover (⇧⌘R)") {
+            ShellActions.toggleVoiceover()
+        } label: {
+            Image(systemName: recorder.isActive ? "stop.circle.fill" : "mic.fill")
+                .foregroundStyle(recorder.isActive ? Theme.playhead : Theme.textPrimary)
+        }
+        .contextMenu {
+            VoiceoverMicrophonePicker(recorder: recorder)
+            Toggle("Mute Timeline While Recording", isOn: $recorder.mutesTimeline)
+        }
     }
 }
 

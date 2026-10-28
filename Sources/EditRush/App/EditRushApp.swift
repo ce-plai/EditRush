@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
         ShellKeyMonitor.shared.install()
+        env.recorder.watchMicrophones()
         env.responder.start()
         windowObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
@@ -55,6 +56,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if env.recorder.isActive {
+            // Keep the take: save and place it, then quit (autosave flushes on terminate).
+            Task {
+                await env.recorder.stopAndWait()
+                NSApp.terminate(nil)
+            }
+            return .terminateCancel
+        }
         guard env.exporter.isExporting else { return .terminateNow }
         guard ShellExportGuard.confirmStop() else { return .terminateCancel }
         Task {

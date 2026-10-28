@@ -48,6 +48,13 @@ The app icon is generated from the logo in `Resources/Logo.svg` by `swift Script
 - **Transitions**: fade up from black and fade to black, per clip.
 - **Transform**: scale and move clips on the canvas.
 - **Titles**: text layers with font, size, colour and placement.
+- **Voiceovers**: click the microphone on an audio track (or the timeline toolbar's mic, or
+  Clip ▸ Record Voiceover, ⇧⌘R). After a 3-2-1 countdown the timeline plays from the playhead
+  while you speak; Space, Esc or Stop ends the take, which lands on that track where recording
+  began (on another audio track if something is in the way). Takes are saved as
+  `Voiceover N.m4a` in a `Voiceovers` folder next to the project file (or
+  `~/Movies/EditRush/Voiceovers` for an unsaved project). Pick the microphone and whether the
+  timeline is muted while recording in the Clip menu or by right-clicking the toolbar mic.
 - **Colour**: per-clip brightness, contrast, saturation and filters.
 - **Export** at 720p, 1080p, 4K or project size, H.264 or HEVC, MP4 or MOV, with progress,
   time remaining and cancel. You can hide the export sheet and keep editing; the toolbar's
@@ -90,6 +97,7 @@ in the inspector and the project name.
 | Split at Playhead | ⌘B or S |
 | Join Clips | ⌘J |
 | Add Title | ⌘T |
+| Record Voiceover / Stop Recording | ⇧⌘R |
 | Close Gaps, Detach Audio, Fade In 1s, Fade Out 1s, Remove Fades | Clip menu |
 
 ### View
