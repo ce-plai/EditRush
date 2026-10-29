@@ -35,9 +35,8 @@ enum TargetSizeExport {
             AVVideoAverageBitRateKey: rates.video,
             AVVideoExpectedSourceFrameRateKey: frameRate,
             AVVideoMaxKeyFrameIntervalDurationKey: 2,
-            // The average is only a hint (hard-to-compress footage overshoots it several times);
-            // this caps every second of video at that rate.
-            kVTCompressionPropertyKey_DataRateLimits as String: [rates.video * 3 / 16, 1],
+            // No kVTCompressionPropertyKey_DataRateLimits: any limit switches the encoder to a
+            // conservative mode that starves the opening frames (visibly blocky) and undershoots.
         ]
         compression[AVVideoProfileLevelKey] = settings.codec == .h264
             ? AVVideoProfileLevelH264HighAutoLevel
