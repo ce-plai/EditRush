@@ -9,7 +9,7 @@ import EditRushCore
 ///   EditRush --validate project.editrush
 ///   EditRush --probe media.mov [more files…]
 ///   EditRush --frame out.png --project project.editrush [--at 12.5] [--max-size 1280x720]
-///   EditRush --export out.mp4 --project project.editrush [--resolution 720p|1080p|4k|project] [--codec h264|hevc]
+///   EditRush --export out.mp4 --project project.editrush [--resolution 720p|1080p|4k|project] [--codec h264|hevc] [--size MB]
 ///
 /// Results go to stdout, issues and progress to stderr. Exit status is 0 on success, 1 on failure.
 /// `--frame` and `--export` refuse projects with validation errors and print warnings.
@@ -47,7 +47,7 @@ enum CommandLineTool {
         }
         if let out = value("--export") {
             guard let project = try load(value("--project")) else { return false }
-            return try await export(project, to: out, resolution: value("--resolution"), codec: value("--codec"))
+            return try await export(project, to: out, resolution: value("--resolution"), codec: value("--codec"), size: value("--size"))
         }
         print(usage)
         return args.contains("--help")
@@ -98,7 +98,7 @@ enum CommandLineTool {
         return true
     }
 
-    private static func export(_ project: Project, to out: String, resolution: String?, codec: String?) async throws -> Bool {
+    private static func export(_ project: Project, to out: String, resolution: String?, codec: String?, size: String?) async throws -> Bool {
         guard project.duration > 0 else { log("error: the project has no clips"); return false }
         var settings = ExportSettings()
         let url = URL(fileURLWithPath: out)
@@ -118,6 +118,10 @@ enum CommandLineTool {
         case nil, "h264": settings.codec = .h264
         case "hevc", "h265": settings.codec = .hevc
         case let other?: log("error: unknown --codec \(other) (h264, hevc)"); return false
+        }
+        if let size {
+            guard let mb = Double(size), mb > 0 else { log("error: --size must be a number of MB, e.g. 25"); return false }
+            settings.targetFileSize = Int64(mb * 1_000_000)
         }
 
         let exporter = Exporter()
@@ -181,8 +185,8 @@ enum CommandLineTool {
             Print JSON media entries (id, url, kind, duration, size, frame rate, audio) for a project's "media".
       --frame out.png --project project.editrush [--at seconds] [--max-size WxH]
             Render the frame at a time to a PNG (full canvas size unless --max-size).
-      --export out.mp4|out.mov --project project.editrush [--resolution 720p|1080p|4k|project] [--codec h264|hevc]
-            Export the movie (defaults: 1080p, H.264).
+      --export out.mp4|out.mov --project project.editrush [--resolution 720p|1080p|4k|project] [--codec h264|hevc] [--size MB]
+            Export the movie (defaults: 1080p, H.264, best quality; --size aims for a file of about that many MB).
       --snapshot out.png [--project project.editrush] [--playhead seconds] [--size WxH]
             Screenshot of the editor window showing the project.
     """

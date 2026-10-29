@@ -8,6 +8,8 @@ public struct ExportSettings: Hashable, Sendable {
     public var resolution: Resolution = .p1080
     public var codec: Codec = .h264
     public var container: Container = .mp4
+    /// Target file size in bytes; nil exports at the codec preset's best quality.
+    public var targetFileSize: Int64?
     public init() {}
     /// Output pixel size for a canvas (scaled so the SHORT side matches the resolution, aspect kept, even dimensions).
     public func outputSize(for canvas: CanvasSettings) -> CGSize {
@@ -33,6 +35,39 @@ public struct ExportSettings: Hashable, Sendable {
 
     public var fileType: AVFileType { container == .mp4 ? .mp4 : .mov }
     public var fileExtension: String { container == .mp4 ? "mp4" : "mov" }
+
+    // MARK: Target size
+
+    /// Share of the target size spent on audio + video samples; the rest is container overhead and
+    /// headroom for the encoder overshooting its average bitrate.
+    static let payloadShare = 0.94
+    /// Video quality bounds in bits per pixel per frame: barely watchable … visually transparent.
+    static let bitsPerPixelRange = 0.01...0.25
+
+    /// Sensible target sizes for a movie of `duration` at this resolution: from heavily compressed
+    /// to roughly preset quality.
+    public func fileSizeRange(for canvas: CanvasSettings, duration: Seconds) -> ClosedRange<Int64> {
+        let size = outputSize(for: canvas)
+        let pixelRate = Double(size.width * size.height) * max(1, canvas.frameRate)
+        func bytes(bitsPerPixel: Double, audio: Int) -> Int64 {
+            let video = max(Self.minimumVideoBitRate, pixelRate * bitsPerPixel)
+            return Int64(((video + Double(audio)) * max(0, duration) / 8 / Self.payloadShare).rounded())
+        }
+        let low = bytes(bitsPerPixel: Self.bitsPerPixelRange.lowerBound, audio: 64_000)
+        let high = bytes(bitsPerPixel: Self.bitsPerPixelRange.upperBound, audio: 128_000)
+        return max(1, low)...max(1, high)
+    }
+
+    static let minimumVideoBitRate = 100_000.0
+
+    /// Video and audio bitrates (bits/s) that make a `duration`-long movie land near `targetFileSize`.
+    func bitRates(duration: Seconds, hasAudio: Bool) -> (video: Int, audio: Int)? {
+        guard let targetFileSize, duration > 0 else { return nil }
+        let total = Double(targetFileSize) * 8 * Self.payloadShare / duration
+        let audio = !hasAudio ? 0 : total >= 1_000_000 ? 128_000 : total >= 300_000 ? 64_000 : 32_000
+        let video = max(Self.minimumVideoBitRate, total - Double(audio))
+        return (Int(video), audio)
+    }
 }
 
 /// Exports a project to a movie file.
@@ -103,14 +138,6 @@ public final class Exporter {
         if !built.missingMedia.isEmpty {
             throw EngineError.missingMedia(built.missingMedia.joined(separator: ", "))
         }
-        guard let session = AVAssetExportSession(asset: built.composition, presetName: settings.presetName) else {
-            throw EngineError.exportFailed("This preset is not available on this Mac")
-        }
-        session.videoComposition = built.videoComposition
-        session.audioMix = built.audioMix
-        session.audioTimePitchAlgorithm = .spectral
-        session.shouldOptimizeForNetworkUse = settings.container == .mp4
-
         // Write next to the destination and swap it in only on success, so a failed, cancelled or
         // interrupted export never destroys an existing file there.
         let fm = FileManager.default
@@ -119,13 +146,27 @@ public final class Exporter {
         let temp = Self.temporaryURL(for: url)
         defer { try? fm.removeItem(at: temp) }
 
-        let monitor = Task { @MainActor [weak self] in
-            for await state in session.states(updateInterval: 0.1) {
-                if case .exporting(let p) = state { self?.progress = p.fractionCompleted }
+        if settings.targetFileSize != nil {
+            try await TargetSizeExport.run(built, settings: settings, frameRate: project.canvas.frameRate, to: temp) { p in
+                Task { @MainActor [weak self] in self?.progress = p }
             }
+        } else {
+            guard let session = AVAssetExportSession(asset: built.composition, presetName: settings.presetName) else {
+                throw EngineError.exportFailed("This preset is not available on this Mac")
+            }
+            session.videoComposition = built.videoComposition
+            session.audioMix = built.audioMix
+            session.audioTimePitchAlgorithm = .spectral
+            session.shouldOptimizeForNetworkUse = settings.container == .mp4
+
+            let monitor = Task { @MainActor [weak self] in
+                for await state in session.states(updateInterval: 0.1) {
+                    if case .exporting(let p) = state { self?.progress = p.fractionCompleted }
+                }
+            }
+            defer { monitor.cancel() }
+            try await session.export(to: temp, as: settings.fileType)
         }
-        defer { monitor.cancel() }
-        try await session.export(to: temp, as: settings.fileType)
         try Task.checkCancellation()
         if fm.fileExists(atPath: url.path) {
             _ = try fm.replaceItemAt(url, withItemAt: temp)

@@ -572,6 +572,73 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(audio.count, 1)
     }
 
+    func testExportToTargetFileSize() async throws {
+        let a = try await media("clip_a.mp4"), music = try await media("music.mp3")
+        var p = makeProject([a, music])
+        p.tracks[0].clips = [Clip(mediaID: a.id, start: 0, duration: 4)]
+        p.tracks[2].clips = [Clip(mediaID: music.id, start: 0, duration: 4)]
+
+        for codec in ExportSettings.Codec.allCases {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("EditRushSized-\(UUID().uuidString).mp4")
+            defer { try? FileManager.default.removeItem(at: url) }
+            let exporter = await Exporter()
+            var settings = ExportSettings()
+            settings.resolution = .p720
+            settings.codec = codec
+            settings.targetFileSize = 600_000
+            await exporter.export(project: p, to: url, settings: settings)
+            let state = await exporter.state
+            XCTAssertEqual(state, .finished(url), "\(codec)")
+
+            let bytes = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64)
+            XCTAssertLessThanOrEqual(bytes, 600_000, "\(codec)")
+            XCTAssertGreaterThan(bytes, 300_000, "\(codec) uses most of the budget")
+            let asset = AVURLAsset(url: url)
+            let duration = try await asset.load(.duration).seconds
+            XCTAssertEqual(duration, 4, accuracy: 0.1)
+            let video = try await asset.loadTracks(withMediaType: .video)
+            let size = try await XCTUnwrap(video.first).load(.naturalSize)
+            XCTAssertEqual(size, CGSize(width: 1280, height: 720))
+            let audio = try await asset.loadTracks(withMediaType: .audio)
+            XCTAssertEqual(audio.count, 1)
+        }
+    }
+
+    func testExportToTargetFileSizeCancel() async throws {
+        let a = try await media("clip_a.mp4")
+        var p = makeProject([a])
+        p.tracks[0].clips = [Clip(mediaID: a.id, start: 0, duration: 6)]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("EditRushSizedCancel-\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let exporter = await Exporter()
+        var settings = ExportSettings()
+        settings.resolution = .canvas
+        settings.targetFileSize = 1_000_000
+        let task = Task { await exporter.export(project: p, to: url, settings: settings) }
+        try await Task.sleep(for: .milliseconds(150))
+        await exporter.cancel()
+        await task.value
+        let state = await exporter.state
+        XCTAssertEqual(state, .cancelled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testTargetFileSizeRangeAndBitRates() {
+        var settings = ExportSettings()
+        let canvas = CanvasSettings()
+        let range = settings.fileSizeRange(for: canvas, duration: 60)
+        XCTAssertLessThan(range.lowerBound, range.upperBound)
+        settings.resolution = .p720
+        XCTAssertLessThan(settings.fileSizeRange(for: canvas, duration: 60).upperBound, range.upperBound)
+        XCTAssertNil(settings.bitRates(duration: 60, hasAudio: true), "no target → preset export")
+
+        settings.targetFileSize = 8_000_000
+        let rates = try! XCTUnwrap(settings.bitRates(duration: 60, hasAudio: true))
+        XCTAssertEqual(rates.audio, 128_000)
+        XCTAssertLessThanOrEqual(Double(rates.video + rates.audio) * 60 / 8, 8_000_000)
+        XCTAssertEqual(settings.bitRates(duration: 60, hasAudio: false)?.audio, 0)
+    }
+
     func testExportCancel() async throws {
         let a = try await media("clip_a.mp4")
         var p = makeProject([a])

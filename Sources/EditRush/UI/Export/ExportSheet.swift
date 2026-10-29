@@ -14,6 +14,8 @@ struct ExportSheet: View {
     @AppStorage("export.codec") private var codec: ExportSettings.Codec = .h264
     @AppStorage("export.container") private var container: ExportSettings.Container = .mp4
     @AppStorage("export.lastDirectory") private var lastDirectory: String = ""
+    /// File size slider, 0…1 across `sizeRange` on a log scale; 1 = best quality (no target).
+    @State private var sizePosition: Double = 1
     @State private var poster: CGImage?
     @State private var note: String?
 
@@ -35,7 +37,18 @@ struct ExportSheet: View {
         s.resolution = resolution
         s.codec = codec
         s.container = container
+        s.targetFileSize = targetFileSize(in: s.fileSizeRange(for: store.project.canvas, duration: duration))
         return s
+    }
+
+    /// nil at the slider's top end; otherwise a size between the range's ends, rounded to two
+    /// significant digits so the export aims for exactly the size shown.
+    private func targetFileSize(in range: ClosedRange<Int64>) -> Int64? {
+        guard sizePosition < 1, duration > 0 else { return nil }
+        let low = Double(range.lowerBound), high = Double(range.upperBound)
+        let bytes = low * pow(high / low, sizePosition)
+        let step = pow(10, floor(log10(bytes)) - 1)
+        return Int64((bytes / step).rounded() * step)
     }
 
     private var duration: Seconds { store.project.duration }
@@ -119,7 +132,7 @@ struct ExportSheet: View {
                     summaryRow("Output", "\(Int(size.width)) × \(Int(size.height))", emphasized: true)
                     summaryRow("Duration", Self.format(duration, fractional: true))
                     summaryRow("Frame rate", "\(Self.formatRate(store.project.canvas.frameRate)) fps")
-                    summaryRow("File", "\(codec.rawValue) · .\(fileExtension)")
+                    summaryRow("File", "\(codec.rawValue) · .\(fileExtension)" + (settings.targetFileSize == nil ? "" : " · " + sizeLabel))
                 }
                 Spacer(minLength: 0)
             }
@@ -143,6 +156,24 @@ struct ExportSheet: View {
                         ForEach(ExportSettings.Container.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                 }
+                GridRow {
+                    formLabel("File size")
+                    HStack(spacing: 10) {
+                        Slider(value: $sizePosition, in: 0...1) {
+                            Text("File size")
+                        } minimumValueLabel: {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left").help("Smaller file")
+                        } maximumValueLabel: {
+                            Image(systemName: "sparkles").help("Best quality")
+                        }
+                        .disabled(duration <= 0)
+                        Text(sizeLabel)
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(Theme.textPrimary)
+                            .frame(width: 92, alignment: .trailing)
+                    }
+                    .foregroundStyle(Theme.textSecondary)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -154,9 +185,19 @@ struct ExportSheet: View {
         }
     }
 
+    private var sizeLabel: String {
+        guard let bytes = settings.targetFileSize else { return "Best quality" }
+        return "≈ " + ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
     private var hint: String {
         if let note { return note }
         if duration <= 0 { return "Add clips to the timeline to export." }
+        if settings.targetFileSize != nil {
+            return sizePosition < 0.3
+                ? "The file will be about this size, but the picture will look noticeably soft or blocky."
+                : "The file will be about this size — handy for upload limits. Smaller sizes lower the picture quality."
+        }
         return codec == .hevc
             ? "HEVC makes smaller files at the same quality; plays on Apple devices and modern browsers."
             : "H.264 plays everywhere — the safest choice for sharing and uploading."

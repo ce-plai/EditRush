@@ -57,7 +57,9 @@ The app icon is generated from the logo in `Resources/Logo.svg` by `swift Script
   timeline is muted while recording in the Clip menu or by right-clicking the toolbar mic.
 - **Colour**: per-clip brightness, contrast, saturation and filters.
 - **Export** at 720p, 1080p, 4K or project size, H.264 or HEVC, MP4 or MOV, with progress,
-  time remaining and cancel. You can hide the export sheet and keep editing; the toolbar's
+  time remaining and cancel. A file size slider runs from best quality down to a target size
+  (e.g. to fit an upload limit); EditRush picks the bitrate to land near it. The size is an
+  estimate: very noisy footage can come out bigger, so drag further left if it does. You can hide the export sheet and keep editing; the toolbar's
   Export button shows progress. Quitting or closing the window during an export asks first
   (Keep Exporting / Stop Export and Quit); a stopped or failed export never replaces an
   existing file.

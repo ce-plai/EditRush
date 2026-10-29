@@ -17,7 +17,7 @@ EDITRUSH=/Applications/EditRush.app/Contents/MacOS/EditRush   # or .build/debug/
 | `$EDITRUSH --probe a.mov b.wav logo.png` | Prints a JSON array of `media` entries (with new ids) ready to paste into a project. |
 | `$EDITRUSH --validate edit.editrush` | Checks the file; prints each issue and an `OK` / `INVALID` summary line. |
 | `$EDITRUSH --frame out.png --project edit.editrush --at 12.5 [--max-size 1280x720]` | Renders the video frame at a time to a PNG, at canvas size unless `--max-size`. |
-| `$EDITRUSH --export out.mp4 --project edit.editrush [--resolution 720p\|1080p\|4k\|project] [--codec h264\|hevc]` | Exports the movie. Container from the extension (`.mp4` / `.mov`). Defaults: 1080p, H.264. |
+| `$EDITRUSH --export out.mp4 --project edit.editrush [--resolution 720p\|1080p\|4k\|project] [--codec h264\|hevc] [--size MB]` | Exports the movie. Container from the extension (`.mp4` / `.mov`). Defaults: 1080p, H.264, best quality; `--size 25` aims for a file of about 25 MB. |
 | `$EDITRUSH --snapshot out.png --project edit.editrush [--playhead 12.5]` | Screenshot of the whole editor window showing the project. |
 
 Results go to stdout; issues and export progress go to stderr. Every mode exits 0 on success and
